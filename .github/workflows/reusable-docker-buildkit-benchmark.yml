@@ -72,6 +72,11 @@ on:
         required: false
         type: string
         default: ''
+      docker_tool_cache_targets:
+        description: "Optional newline-delimited Bake targets that receive tool-cache injection."
+        required: false
+        type: string
+        default: ''
       image_tag:
         required: true
         type: string
@@ -124,6 +129,7 @@ env:
   DOCKER_BAKE_TARGETS: ${{ inputs.docker_bake_targets }}
   DOCKER_BAKE_WORKDIR: ${{ inputs.docker_bake_workdir }}
   BORINGCACHE_DOCKER_TOOL_CACHE: ${{ inputs.docker_tool_cache }}
+  BORINGCACHE_DOCKER_TOOL_CACHE_TARGETS: ${{ inputs.docker_tool_cache_targets }}
   PREPARE_COMMAND: ${{ inputs.prepare_command }}
   PREPARE_INSTALL_COMMAND: ${{ inputs.prepare_install_command }}
   PREPARE_NODE_VERSION: ${{ inputs.prepare_node_version }}

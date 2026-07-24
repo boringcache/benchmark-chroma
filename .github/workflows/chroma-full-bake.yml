@@ -40,7 +40,7 @@ jobs:
             derive_sccache_dockerfile: false
             docker_tool_cache: ""
           - label: BC tool
-            benchmark_id: chroma-full-bake-tool
+            benchmark_id: chroma-full-bake-tool-v2
             docker_bake_files: |
               .github/actions/tilt-setup-prebuild/docker-bake.hcl
               ../fixtures/chroma-sccache-bake.override.hcl
@@ -74,10 +74,21 @@ jobs:
       derive_sccache_dockerfile: ${{ matrix.derive_sccache_dockerfile }}
       sccache_dockerfile_output: upstream/rust/Dockerfile.sccache
       docker_tool_cache: ${{ matrix.docker_tool_cache }}
+      docker_tool_cache_targets: |
+        rust-log-service
+        rust-sysdb-service
+        rust-sysdb-migration
+        rust-frontend-service
+        query-service
+        compactor-service
+        garbage-collector
+        load-service
+        work-queue-service
+        fn-consumer
       image_tag: chroma-full-bake-benchmark:latest
       free_disk_space: true
       cli_platform: linux-amd64
-      cli_version: vcli-canary-1d89613aa59b
+      cli_version: vcli-canary-9cd861a8d841
       buildkit_image: ghcr.io/boringcache/buildkit:v0.30.0-bc
       benchmark_workspace: ${{ github.repository }}
     secrets: inherit

@@ -10,6 +10,7 @@ mode="${1:-full}"
 cache_args=()
 build_output="${BENCHMARK_BUILD_OUTPUT:-none}"
 docker_tool_cache="${BORINGCACHE_DOCKER_TOOL_CACHE:-}"
+docker_tool_cache_targets="${BORINGCACHE_DOCKER_TOOL_CACHE_TARGETS:-}"
 docker_bake_files="${DOCKER_BAKE_FILES:-}"
 docker_bake_targets="${DOCKER_BAKE_TARGETS:-}"
 docker_bake_workdir="${DOCKER_BAKE_WORKDIR:-upstream}"
@@ -244,6 +245,9 @@ run_wrapped_boringcache_build() {
 
   if [[ -n "$docker_tool_cache" ]]; then
     boringcache_args+=(--tool-cache "${docker_tool_cache}:${CACHE_SCOPE}-${docker_tool_cache}")
+    while IFS= read -r target; do
+      [[ -n "$target" ]] && boringcache_args+=(--tool-cache-target "$target")
+    done <<< "$docker_tool_cache_targets"
   fi
 
   local wrapped_cache_args=()
