@@ -20,6 +20,11 @@ on:
       project_repo:
         required: true
         type: string
+      project_ref:
+        description: "Optional exact upstream commit for a controlled replay."
+        required: false
+        type: string
+        default: ''
       dockerfile_path:
         required: false
         type: string
@@ -83,6 +88,7 @@ permissions:
 
 env:
   PROJECT_REPO: ${{ inputs.project_repo }}
+  PROJECT_REF: ${{ inputs.project_ref }}
   BENCHMARK_ID: ${{ inputs.benchmark_id }}
   BENCHMARK_WORKSPACE: ${{ inputs.benchmark_workspace || github.repository }}
   CACHE_LANE: ${{ inputs.cache_lane }}
@@ -166,6 +172,14 @@ jobs:
           set -euo pipefail
           git submodule sync --recursive
           git -c protocol.version=2 submodule update --init --depth 1 --recommend-shallow --jobs 4 upstream
+          if [[ -n "$PROJECT_REF" ]]; then
+            if [[ ! "$PROJECT_REF" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "project_ref must be an exact 40-character commit SHA." >&2
+              exit 1
+            fi
+            git -C upstream fetch --depth 1 origin "$PROJECT_REF"
+            git -C upstream checkout --detach "$PROJECT_REF"
+          fi
 
       - name: Prepare base benchmark source tree
         run: ./scripts/prepare-source.sh base

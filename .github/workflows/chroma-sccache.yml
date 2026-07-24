@@ -11,6 +11,11 @@ on:
         type: choice
         default: fresh
         options: [fresh, rolling]
+      project_ref:
+        description: "Exact Chroma commit to benchmark."
+        required: true
+        type: string
+        default: "4088bf614916e7027f891d4dd3c91b2a478eeef3"
       buildkit_image:
         description: "Optional managed BoringCache BuildKit image."
         required: false
@@ -59,6 +64,7 @@ jobs:
       cache_lane: ${{ inputs.cache_lane }}
       benchmark_id: ${{ format('{0}{1}', matrix.benchmark_id, inputs.benchmark_id_suffix) }}
       project_repo: chroma-core/chroma
+      project_ref: ${{ inputs.project_ref }}
       dockerfile_path: ${{ matrix.dockerfile_path }}
       derive_sccache_dockerfile: ${{ matrix.derive_sccache_dockerfile }}
       docker_tool_cache: ${{ matrix.docker_tool_cache }}
