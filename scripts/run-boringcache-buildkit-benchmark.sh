@@ -10,36 +10,45 @@ mode="${1:-full}"
 cache_args=()
 build_output="${BENCHMARK_BUILD_OUTPUT:-none}"
 docker_tool_cache="${BORINGCACHE_DOCKER_TOOL_CACHE:-}"
+docker_bake_files="${DOCKER_BAKE_FILES:-}"
+docker_bake_targets="${DOCKER_BAKE_TARGETS:-}"
+docker_bake_workdir="${DOCKER_BAKE_WORKDIR:-upstream}"
 export BORINGCACHE_OBSERVABILITY_INCLUDE_CACHE_OPS="${BORINGCACHE_OBSERVABILITY_INCLUDE_CACHE_OPS:-1}"
 
-find_step_id() {
+find_step_ids() {
   local pattern="$1"
-  sed -nE "s/^#([0-9]+) ${pattern}.*/\\1/p" "$build_log" | tail -n1
+  sed -nE "s/^#([0-9]+)( \\[[^]]+\\])? ${pattern}.*/\\1/p" "$build_log"
 }
 
 find_step_seconds() {
   local step_id="$1"
   [[ -n "$step_id" ]] || return 0
-  sed -nE "s/^#${step_id} DONE ([0-9]+(\\.[0-9]+)?)s$/\\1/p" "$build_log" | tail -n1
+  sed -nE "s/^#${step_id}( \\[[^]]+\\])? DONE ([0-9]+(\\.[0-9]+)?)s$/\\2/p" "$build_log" | tail -n1
+}
+
+find_max_step_seconds() {
+  local pattern="$1"
+  local seconds=""
+  while IFS= read -r step_id; do
+    [[ -n "$step_id" ]] || continue
+    seconds="$(find_step_seconds "$step_id")"
+    [[ -n "$seconds" ]] && printf '%s\n' "$seconds"
+  done < <(find_step_ids "$pattern") | awk 'BEGIN { max = 0; found = 0 } { if ($1 > max) max = $1; found = 1 } END { if (found) print max }'
 }
 
 write_build_metrics() {
   local output_path="${BENCHMARK_METRICS_OUTPUT:-}"
   [[ -n "$output_path" ]] || return 0
 
-  local import_step=""
-  local export_step=""
   local import_seconds=""
   local export_seconds=""
   local import_status=""
   local cached_steps=""
 
-  import_step="$(find_step_id "importing cache manifest from")"
-  export_step="$(find_step_id "exporting cache to boringcache")"
-  import_seconds="$(find_step_seconds "$import_step")"
-  export_seconds="$(find_step_seconds "$export_step")"
+  import_seconds="$(find_max_step_seconds "importing cache manifest from")"
+  export_seconds="$(find_max_step_seconds "exporting cache to boringcache")"
   import_status="$(build_import_status)"
-  cached_steps="$(grep -Ec '^#[0-9]+ CACHED$' "$build_log" || true)"
+  cached_steps="$(grep -Ec '^#[0-9]+( \[[^]]+\])? CACHED$' "$build_log" || true)"
 
   mkdir -p "$(dirname "$output_path")"
   : > "$output_path"
@@ -156,7 +165,7 @@ write_build_diagnostics() {
   [[ -n "$output_path" ]] || return 0
 
   local cached_steps=""
-  cached_steps="$(grep -Ec '^#[0-9]+ CACHED$' "$build_log" || true)"
+  cached_steps="$(grep -Ec '^#[0-9]+( \[[^]]+\])? CACHED$' "$build_log" || true)"
   local observability_path="${BORINGCACHE_OBSERVABILITY_JSONL_PATH:-}"
 
   mkdir -p "$(dirname "$output_path")"
@@ -192,7 +201,7 @@ write_build_diagnostics() {
     fi
     echo "EOF"
     echo "slow_done_lines<<EOF"
-    grep -E '^#[0-9]+ DONE [0-9]+(\.[0-9]+)?s$' "$build_log" | tail -n 80 || true
+    grep -E '^#[0-9]+( \[[^]]+\])? DONE [0-9]+(\.[0-9]+)?s$' "$build_log" | tail -n 80 || true
     echo "EOF"
     echo "observability_jsonl=${observability_path}"
     if [[ -n "$observability_path" && -s "$observability_path" ]]; then
@@ -247,18 +256,62 @@ run_wrapped_boringcache_build() {
     done
   fi
 
+  local build_command=()
+  local command_workdir="."
+  if [[ -n "$docker_bake_files" ]]; then
+    if [[ "$build_output" != "none" ]]; then
+      echo "Docker Bake benchmarks currently require BENCHMARK_BUILD_OUTPUT=none." >&2
+      status=2
+      return
+    fi
+    local bake_file_args=()
+    local bake_target_args=()
+    local value=""
+    while IFS= read -r value; do
+      [[ -n "$value" ]] && bake_file_args+=(--file "$value")
+    done <<< "$docker_bake_files"
+    while IFS= read -r value; do
+      [[ -n "$value" ]] && bake_target_args+=("$value")
+    done <<< "$docker_bake_targets"
+    if [[ "${#bake_file_args[@]}" -eq 0 || "${#bake_target_args[@]}" -eq 0 ]]; then
+      echo "Docker Bake benchmarks require explicit DOCKER_BAKE_FILES and DOCKER_BAKE_TARGETS." >&2
+      status=2
+      return
+    fi
+    command_workdir="$docker_bake_workdir"
+    if [[ ! -d "$command_workdir" ]]; then
+      echo "Docker Bake working directory does not exist: ${command_workdir}" >&2
+      status=2
+      return
+    fi
+    build_command=(
+      docker buildx bake
+      --progress=plain
+      "${bake_file_args[@]}"
+      "${extra_args[@]}"
+      "${wrapped_cache_args[@]}"
+      "${bake_target_args[@]}"
+    )
+  else
+    build_command=(
+      docker buildx build
+      --file "$DOCKERFILE_PATH"
+      --tag "$IMAGE_TAG"
+      --progress=plain
+      "${extra_args[@]}"
+      "${wrapped_cache_args[@]}"
+      "${output_args[@]}"
+      "$BENCHMARK_DOCKER_CONTEXT"
+    )
+  fi
+
   : > "$build_log"
   set +e +u
+  pushd "$command_workdir" >/dev/null
   DOCKER_BUILDKIT=1 BORINGCACHE_TIMING_TRACE=1 boringcache "${boringcache_args[@]:1}" -- \
-    docker buildx build \
-    --file "$DOCKERFILE_PATH" \
-    --tag "$IMAGE_TAG" \
-    --progress=plain \
-    "${extra_args[@]}" \
-    "${wrapped_cache_args[@]}" \
-    "${output_args[@]}" \
-    "$BENCHMARK_DOCKER_CONTEXT" 2>&1 | tee "$build_log"
+    "${build_command[@]}" 2>&1 | tee "$build_log"
   status=${PIPESTATUS[0]}
+  popd >/dev/null
   set -e -u
 }
 

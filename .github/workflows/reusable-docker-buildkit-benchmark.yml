@@ -42,11 +42,31 @@ on:
         required: false
         type: string
         default: ''
+      docker_bake_files:
+        description: "Optional newline-delimited Bake definition files, relative to docker_bake_workdir."
+        required: false
+        type: string
+        default: ''
+      docker_bake_targets:
+        description: "Required newline-delimited concrete targets for a Docker Bake benchmark."
+        required: false
+        type: string
+        default: ''
+      docker_bake_workdir:
+        description: "Working directory for Docker Bake."
+        required: false
+        type: string
+        default: upstream
       derive_sccache_dockerfile:
         description: "Derive the Chroma sccache fixture from the pinned upstream Dockerfile."
         required: false
         type: boolean
         default: false
+      sccache_dockerfile_output:
+        description: "Generated Chroma sccache Dockerfile path."
+        required: false
+        type: string
+        default: .benchmark/chroma-sccache.Dockerfile
       docker_tool_cache:
         description: "Optional BoringCache Docker tool cache (for example, sccache)."
         required: false
@@ -100,6 +120,9 @@ env:
   BORINGCACHE_MANAGED_BUILDKIT_IMAGE: ${{ inputs.buildkit_image }}
   BUILDKIT_IMAGE: ${{ inputs.buildkit_image }}
   DOCKER_BUILD_EXTRA_ARGS: ${{ inputs.docker_build_args }}
+  DOCKER_BAKE_FILES: ${{ inputs.docker_bake_files }}
+  DOCKER_BAKE_TARGETS: ${{ inputs.docker_bake_targets }}
+  DOCKER_BAKE_WORKDIR: ${{ inputs.docker_bake_workdir }}
   BORINGCACHE_DOCKER_TOOL_CACHE: ${{ inputs.docker_tool_cache }}
   PREPARE_COMMAND: ${{ inputs.prepare_command }}
   PREPARE_INSTALL_COMMAND: ${{ inputs.prepare_install_command }}
@@ -191,7 +214,20 @@ jobs:
 
       - name: Derive benchmark Dockerfile
         if: inputs.derive_sccache_dockerfile
-        run: ./scripts/render-chroma-sccache-dockerfile.sh .benchmark/chroma-sccache.Dockerfile
+        run: ./scripts/render-chroma-sccache-dockerfile.sh '${{ inputs.sccache_dockerfile_output }}'
+
+      - name: Validate Docker Bake benchmark inputs
+        if: inputs.docker_bake_files != ''
+        run: |
+          set -euo pipefail
+          if [[ "${{ inputs.strategy }}" != "boringcache" ]]; then
+            echo "Docker Bake is currently supported only by the managed BoringCache benchmark path." >&2
+            exit 1
+          fi
+          if [[ -z "${DOCKER_BAKE_TARGETS}" ]]; then
+            echo "docker_bake_targets must list every concrete target." >&2
+            exit 1
+          fi
 
       - name: Setup Node for Docker build artifacts
         if: inputs.prepare_install_command != '' || inputs.prepare_command != ''
@@ -244,9 +280,26 @@ jobs:
 
           if [[ "${{ inputs.strategy }}" == "boringcache" ]]; then
             cache_scope="${BENCHMARK_ID}-run-${run_suffix}"
-            tags_csv="${cache_scope}"
+            cache_tags=()
+            exact_tags=()
+            if [[ -n "${DOCKER_BAKE_TARGETS:-}" ]]; then
+              while IFS= read -r target; do
+                [[ -n "$target" ]] || continue
+                target_tag="${cache_scope}-bake-${target}"
+                cache_tags+=("$target_tag")
+                exact_tags+=("$target_tag")
+              done <<< "$DOCKER_BAKE_TARGETS"
+            else
+              cache_tags+=("$cache_scope")
+            fi
+            if [[ -n "${BORINGCACHE_DOCKER_TOOL_CACHE:-}" ]]; then
+              cache_tags+=("${cache_scope}-${BORINGCACHE_DOCKER_TOOL_CACHE}")
+            fi
+            tags_csv="$(IFS=,; echo "${cache_tags[*]}")"
+            exact_tags_csv="$(IFS=,; echo "${exact_tags[*]}")"
             echo "cache_scope=${cache_scope}" >> "$GITHUB_OUTPUT"
             echo "tags_csv=${tags_csv}" >> "$GITHUB_OUTPUT"
+            echo "exact_tags_csv=${exact_tags_csv}" >> "$GITHUB_OUTPUT"
           else
             if [[ "$CACHE_LANE" == "rolling" ]]; then
               cache_scope_primary="${BENCHMARK_ID}-rolling-${ref_slug}"
@@ -307,6 +360,9 @@ jobs:
           DOCKERFILE_PATH: ${{ inputs.dockerfile_path }}
           BENCHMARK_DOCKER_CONTEXT: ${{ inputs.docker_context }}
           DOCKER_BUILD_EXTRA_ARGS: ${{ inputs.docker_build_args }}
+          DOCKER_BAKE_FILES: ${{ inputs.docker_bake_files }}
+          DOCKER_BAKE_TARGETS: ${{ inputs.docker_bake_targets }}
+          DOCKER_BAKE_WORKDIR: ${{ inputs.docker_bake_workdir }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
@@ -528,6 +584,9 @@ jobs:
           DOCKERFILE_PATH: ${{ inputs.dockerfile_path }}
           BENCHMARK_DOCKER_CONTEXT: ${{ inputs.docker_context }}
           DOCKER_BUILD_EXTRA_ARGS: ${{ inputs.docker_build_args }}
+          DOCKER_BAKE_FILES: ${{ inputs.docker_bake_files }}
+          DOCKER_BAKE_TARGETS: ${{ inputs.docker_bake_targets }}
+          DOCKER_BAKE_WORKDIR: ${{ inputs.docker_bake_workdir }}
         run: |
           set -euo pipefail
           docker_extra_args=()
@@ -766,7 +825,7 @@ jobs:
           tags_csv="${{ steps.scope.outputs.tags_csv }}"
           mkdir -p benchmark-storage
           breakdown_path="benchmark-storage/boringcache-storage-breakdown.json"
-          exact_tags=""
+          exact_tags="${{ steps.scope.outputs.exact_tags_csv }}"
           bytes="$(BORINGCACHE_STORAGE_BREAKDOWN_PATH="$breakdown_path" BORINGCACHE_EXACT_TAGS="$exact_tags" .benchmark-config/scripts/sum-boringcache-check-sizes.sh "$BENCHMARK_WORKSPACE" "$tags_csv")"
           echo "bytes=${bytes}" >> "$GITHUB_OUTPUT"
           echo "breakdown_path=${breakdown_path}" >> "$GITHUB_OUTPUT"
