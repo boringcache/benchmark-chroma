@@ -127,15 +127,20 @@ Rust compile stages, the tool lane handled 1,761 misses and populated 1,753
 objects (1.85 GB). Those writes overlapped, reaching 23 completed puts in one
 second, with no staging or commit errors or retries.
 
-The next source-only commit produced a valid steady-state rolling comparison:
+The next two commits produced valid steady-state rolling comparisons:
 
-| Runner | Run | Docker cache only | Docker + sccache | Time saved | sccache hit rate |
-| --- | --- | ---: | ---: | ---: | ---: |
-| GitHub 4-core | [30092677434](https://github.com/boringcache/benchmark-chroma/actions/runs/30092677434) | 830s | 434s | 396s (48%) | 859/861 (99.8%) |
-| GitHub 8-core | [30100507004](https://github.com/boringcache/benchmark-chroma/actions/runs/30100507004) | 438s | 269s | 169s (39%) | 859/861 (99.8%) |
+| Runner | Upstream change | Run | Docker cache only | Docker + sccache | Time saved | sccache hit rate |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| GitHub 4-core | Source only | [30092677434](https://github.com/boringcache/benchmark-chroma/actions/runs/30092677434) | 830s | 434s | 396s (48%) | 859/861 (99.8%) |
+| GitHub 4-core | Lockfile + source | [30093619302](https://github.com/boringcache/benchmark-chroma/actions/runs/30093619302) | 920s | 450s | 470s (51%) | 2,086/2,096 (99.5%) |
+| **GitHub 4-core average** | | | **875s** | **442s** | **433s (49%)** | **2,945/2,957 (99.6%)** |
+| GitHub 8-core | Source only | [30100507004](https://github.com/boringcache/benchmark-chroma/actions/runs/30100507004) | 438s | 269s | 169s (39%) | 859/861 (99.8%) |
+| GitHub 8-core | Lockfile + source | [30101448180](https://github.com/boringcache/benchmark-chroma/actions/runs/30101448180) | 575s | 292s | 283s (49%) | 2,086/2,096 (99.5%) |
+| **GitHub 8-core average** | | | **507s** | **281s** | **226s (45%)** | **2,945/2,957 (99.6%)** |
 
-The 8-core runner reduced Docker-plus-sccache wall time by another 165 seconds
-(38%) while preserving the same compiler-cache hit rate.
+Across both rolling commits, the 8-core runner reduced Docker-plus-sccache wall
+time by another 161 seconds (36%) while preserving the same aggregate
+compiler-cache hit rate.
 
 ## Scenarios
 
