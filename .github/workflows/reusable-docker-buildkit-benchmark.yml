@@ -534,6 +534,10 @@ jobs:
         if: inputs.cache_lane != 'rolling'
         run: ./scripts/prepare-source.sh warm1
 
+      - name: Derive warm benchmark Dockerfile
+        if: inputs.cache_lane != 'rolling' && inputs.derive_sccache_dockerfile
+        run: ./scripts/render-chroma-sccache-dockerfile.sh '${{ inputs.sccache_dockerfile_output }}'
+
       - name: Install warm Docker build artifact dependencies
         if: inputs.cache_lane != 'rolling' && inputs.prepare_install_command != ''
         run: |
