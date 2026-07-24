@@ -777,7 +777,13 @@ jobs:
 
       - name: Capture committed upstream ref
         id: upstream_ref
-        run: echo "sha=$(git -C .benchmark-config rev-parse HEAD:upstream)" >> "$GITHUB_OUTPUT"
+        run: |
+          actual_ref="$(git -C upstream rev-parse HEAD)"
+          if [[ -n "$PROJECT_REF" && "$actual_ref" != "$PROJECT_REF" ]]; then
+            echo "Checked out upstream ref ${actual_ref}, expected ${PROJECT_REF}." >&2
+            exit 1
+          fi
+          echo "sha=${actual_ref}" >> "$GITHUB_OUTPUT"
 
       - name: Normalize benchmark fields
         id: normalize
