@@ -112,6 +112,31 @@ This is a distinct product experiment, not a rewrite of the primary Docker
 cache result: the benchmark-only fixture supplies the executable, while
 `boringcache docker --tool-cache sccache` supplies the runtime integration.
 
+### Eight-Core Runner Qualification
+
+The same proof was also run on GitHub's 8-core `ubuntu-latest-m` runner. An
+isolated seed run
+[`30099629778`](https://github.com/boringcache/benchmark-chroma/actions/runs/30099629778)
+populated empty caches at `4088bf6`: the unchanged-Dockerfile control took
+599 seconds and Docker plus sccache took 668 seconds. The comparable 4-core
+fresh run above took 970 and 1,049 seconds respectively.
+
+The 69-second cold sccache population cost was not a final proxy flush. The
+BuildKit exports were effectively equal at 56.1 and 56.4 seconds. During the
+Rust compile stages, the tool lane handled 1,761 misses and populated 1,753
+objects (1.85 GB). Those writes overlapped, reaching 23 completed puts in one
+second, with no staging or commit errors or retries.
+
+The next source-only commit produced a valid steady-state rolling comparison:
+
+| Runner | Run | Docker cache only | Docker + sccache | Time saved | sccache hit rate |
+| --- | --- | ---: | ---: | ---: | ---: |
+| GitHub 4-core | [30092677434](https://github.com/boringcache/benchmark-chroma/actions/runs/30092677434) | 830s | 434s | 396s (48%) | 859/861 (99.8%) |
+| GitHub 8-core | [30100507004](https://github.com/boringcache/benchmark-chroma/actions/runs/30100507004) | 438s | 269s | 169s (39%) | 859/861 (99.8%) |
+
+The 8-core runner reduced Docker-plus-sccache wall time by another 165 seconds
+(38%) while preserving the same compiler-cache hit rate.
+
 ## Scenarios
 
 - `cold`
