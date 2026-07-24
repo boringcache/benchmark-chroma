@@ -43,6 +43,11 @@ Docker-plus-sccache path could still create an angle.
   benchmark-only Dockerfile that adds a pinned `sccache` executable. The
   BoringCache CLI owns the compiler environment and remote tool-cache wiring;
   its paired control still builds the unchanged upstream Dockerfile.
+- `chroma-full-bake.yml` reproduces Chroma's complete PR prebuild command and
+  target graph from
+  `.github/actions/tilt-setup-prebuild/docker-bake.hcl`. All 12 targets receive
+  managed Docker caching; only the 10 Rust targets receive `sccache`. The two
+  Go targets remain unchanged and receive ordinary Docker caching only.
 
 Pinned upstream source:
 
@@ -141,6 +146,59 @@ The next two commits produced valid steady-state rolling comparisons:
 Across both rolling commits, the 8-core runner reduced Docker-plus-sccache wall
 time by another 161 seconds (36%) while preserving the same aggregate
 compiler-cache hit rate.
+
+## Complete Upstream Bake Graph
+
+The full-graph workflow runs Chroma's actual PR command as one parallel Bake
+on GitHub's 8-core `ubuntu-latest-m` runner:
+
+```sh
+docker buildx bake -f .github/actions/tilt-setup-prebuild/docker-bake.hcl
+```
+
+Its 12 named image targets are 10 Rust targets (`rust-log-service`,
+`rust-sysdb-service`, `rust-sysdb-migration`, `rust-frontend-service`,
+`query-service`, `compactor-service`, `garbage-collector`, `load-service`,
+`work-queue-service`, and `fn-consumer`) plus the Go `sysdb` and
+`sysdb-migration` targets. These are Docker Bake target names, not Rust target
+triples.
+
+Seed run
+[`30112114394`](https://github.com/boringcache/benchmark-chroma/actions/runs/30112114394)
+populated an empty isolated tool-cache scope at `4088bf6` and is excluded from
+the comparison. The two subsequent runs imported only their preceding rolling
+cache and built real upstream commits:
+
+| Upstream change | Run | Docker cache only | Docker + sccache | Wall time saved | Pre-flush Bake, Docker + sccache | Upstream 16-vCPU Bake | sccache hit rate |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Source only (`68efa22`) | [30113095955](https://github.com/boringcache/benchmark-chroma/actions/runs/30113095955) | 598s | 574s | 24s (4%) | 290s | [224s](https://github.com/chroma-core/chroma/actions/runs/30032434118/job/89302419802) | 859/861 (99.8%) |
+| Lockfile + source (`ab02926`) | [30113798308](https://github.com/boringcache/benchmark-chroma/actions/runs/30113798308) | 616s | 527s | 89s (14%) | 321s | [195s](https://github.com/chroma-core/chroma/actions/runs/30031630614/job/89289405031) | 2,086/2,096 (99.5%) |
+| **Average** | | **607s** | **551s** | **57s (9%)** | **306s** | **210s** | **2,945/2,957 (99.6%)** |
+
+The complete graph does not currently qualify a raw wall-time claim against
+Blacksmith. The compiler cache works: before managed Docker-cache shutdown,
+the 8-core tool lane is roughly 96 seconds behind Chroma's 16-vCPU sticky-disk
+Bake average. The current loss is multi-target Docker-cache publication. Ten
+Rust exporters repeatedly stream a shared changed builder layer through the
+local proxy. Across the two measured commits, the proxy ingested 28.1 and
+36.6 GB for the tool lane even though the remote CAS deduplicated common
+content.
+
+The per-target manifests total roughly 45–48 GiB of logical cache graph. That
+sum intentionally double-counts shared blobs referenced by multiple targets;
+it is not unique physical storage. BoringCache's content-addressed store keeps
+one physical copy of shared bodies.
+
+That duplicate local ingestion extends strict shutdown well beyond BuildKit's
+visible export spans. For example, the source-only tool Bake finished in about
+290 seconds, including an 85-second maximum export span, but the CLI returned
+at 574 seconds after pending managed-cache work completed. This is a product
+optimization target, not an upstream or `sccache` failure.
+
+Chroma's upstream sticky-disk tax is much smaller: builder attachment took
+2–3 seconds, and snapshot commit took about 5 seconds on warm runs (34 seconds
+on the seed-like run). The corresponding upstream jobs completed in 211–254
+seconds, with 195–224 seconds spent in Bake.
 
 ## Scenarios
 
