@@ -9,6 +9,7 @@ cache_export_pattern='expected sha256:.*got sha256:e3b0|error writing layer blob
 mode="${1:-full}"
 cache_args=()
 build_output="${BENCHMARK_BUILD_OUTPUT:-none}"
+docker_tool_cache="${BORINGCACHE_DOCKER_TOOL_CACHE:-}"
 export BORINGCACHE_OBSERVABILITY_INCLUDE_CACHE_OPS="${BORINGCACHE_OBSERVABILITY_INCLUDE_CACHE_OPS:-1}"
 
 find_step_id() {
@@ -230,6 +231,10 @@ run_wrapped_boringcache_build() {
 
   if [[ "$mode" == "partial-warm" ]]; then
     boringcache_args+=(--read-only)
+  fi
+
+  if [[ -n "$docker_tool_cache" ]]; then
+    boringcache_args+=(--tool-cache "${docker_tool_cache}:${CACHE_SCOPE}-${docker_tool_cache}")
   fi
 
   local wrapped_cache_args=()

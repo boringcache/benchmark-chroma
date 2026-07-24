@@ -32,6 +32,16 @@ on:
         required: false
         type: string
         default: ''
+      derive_sccache_dockerfile:
+        description: "Derive the Chroma sccache fixture from the pinned upstream Dockerfile."
+        required: false
+        type: boolean
+        default: false
+      docker_tool_cache:
+        description: "Optional BoringCache Docker tool cache (for example, sccache)."
+        required: false
+        type: string
+        default: ''
       image_tag:
         required: true
         type: string
@@ -79,6 +89,7 @@ env:
   BORINGCACHE_MANAGED_BUILDKIT_IMAGE: ${{ inputs.buildkit_image }}
   BUILDKIT_IMAGE: ${{ inputs.buildkit_image }}
   DOCKER_BUILD_EXTRA_ARGS: ${{ inputs.docker_build_args }}
+  BORINGCACHE_DOCKER_TOOL_CACHE: ${{ inputs.docker_tool_cache }}
   PREPARE_COMMAND: ${{ inputs.prepare_command }}
   PREPARE_INSTALL_COMMAND: ${{ inputs.prepare_install_command }}
   PREPARE_NODE_VERSION: ${{ inputs.prepare_node_version }}
@@ -158,6 +169,10 @@ jobs:
 
       - name: Prepare base benchmark source tree
         run: ./scripts/prepare-source.sh base
+
+      - name: Derive benchmark Dockerfile
+        if: inputs.derive_sccache_dockerfile
+        run: ./scripts/render-chroma-sccache-dockerfile.sh .benchmark/chroma-sccache.Dockerfile
 
       - name: Setup Node for Docker build artifacts
         if: inputs.prepare_install_command != '' || inputs.prepare_command != ''
