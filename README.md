@@ -8,7 +8,7 @@ then lets downstream jobs clone the warmed snapshot. The upstream workflow
 documents the avoided work as roughly six minutes across about 20 jobs.
 
 This benchmark therefore is not evidence for outreach by itself. Its purpose
-is to test whether a portable registry-backed cache can produce a useful
+is to test whether a portable remote BuildKit cache can produce a useful
 cost, portability, or cache-transfer result against an already optimized
 sticky-disk setup.
 
@@ -45,6 +45,19 @@ Pinned upstream source:
 
 - `ab02926708b49ceca24977793927df7fda537ea1`
 
+## Rolling Proof Series
+
+The benchmark replays these three linear `main` merge commits oldest to
+newest. For each merge, the associated PR successfully ran
+`Build Docker images (warm sticky disk)`, so the sample matches Chroma's
+actual Docker-triggering change detection:
+
+| Merge commit | Upstream proof |
+| --- | --- |
+| `4088bf614916e7027f891d4dd3c91b2a478eeef3` | [PR #7490 run 30028588454](https://github.com/chroma-core/chroma/actions/runs/30028588454) |
+| `68efa222af364d877133ce30e26fd839e7d2b100` | [PR #7489 run 30032434118](https://github.com/chroma-core/chroma/actions/runs/30032434118) |
+| `ab02926708b49ceca24977793927df7fda537ea1` | [PR #7478 run 30031630614](https://github.com/chroma-core/chroma/actions/runs/30031630614) |
+
 ## Scenarios
 
 - `cold`
@@ -54,10 +67,8 @@ The fresh lane runs a no-prior-cache cold build plus exactly one warm rerun on
 the same pinned source tree. The rolling lane records the upstream commit
 build as-is after each upstream sync and skips `warm1`.
 
-BoringCache uses its external registry/OCI BuildKit cache path. It does not
-run BoringCache inside upstream Dockerfile `RUN` steps. The optional
-BoringCache BuildKit-backend and ECR lanes remain disabled until their
-repository variables are configured.
+The two-entry matrix compares GitHub Actions cache with BoringCache managed
+BuildKit. It does not run BoringCache inside upstream Dockerfile `RUN` steps.
 
 The GitHub-hosted GHA-versus-BoringCache lanes are controlled cache-backend
 tests; they are not an equal-hardware comparison with Chroma's 16-vCPU
