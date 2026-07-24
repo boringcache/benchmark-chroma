@@ -46,7 +46,8 @@ Docker-plus-sccache path could still create an angle.
 
 Pinned upstream source:
 
-- `ab02926708b49ceca24977793927df7fda537ea1`
+- see the committed `upstream/` submodule on `main`; the measured proof series
+  below remains fixed
 
 ## Rolling Proof Series
 
