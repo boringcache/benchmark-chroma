@@ -1,6 +1,6 @@
 name: "Chroma Docker sccache Benchmark"
 run-name: >-
-  ${{ format('sccache {0} | {1}', inputs.cache_lane == 'rolling' && 'Rolling' || 'Fresh', github.ref_name) }}
+  ${{ format('sccache {0} | {1} | {2}', inputs.cache_lane == 'rolling' && 'Rolling' || 'Fresh', inputs.runner_label, github.ref_name) }}
 
 on:
   workflow_dispatch:
@@ -16,6 +16,14 @@ on:
         required: true
         type: string
         default: "4088bf614916e7027f891d4dd3c91b2a478eeef3"
+      runner_label:
+        description: "GitHub-hosted runner size"
+        required: false
+        type: choice
+        default: ubuntu-latest
+        options:
+          - ubuntu-latest
+          - ubuntu-latest-m
       buildkit_image:
         description: "Optional managed BoringCache BuildKit image."
         required: false
@@ -62,6 +70,7 @@ jobs:
     with:
       strategy: boringcache
       cache_lane: ${{ inputs.cache_lane }}
+      runner_label: ${{ inputs.runner_label }}
       benchmark_id: ${{ format('{0}{1}', matrix.benchmark_id, inputs.benchmark_id_suffix) }}
       project_repo: chroma-core/chroma
       project_ref: ${{ inputs.project_ref }}

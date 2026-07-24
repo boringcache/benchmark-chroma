@@ -10,6 +10,11 @@ on:
         required: false
         type: string
         default: fresh
+      runner_label:
+        description: "GitHub-hosted runner label for the benchmark job."
+        required: false
+        type: string
+        default: ubuntu-latest
       buildkit_image:
         required: false
         type: string
@@ -103,7 +108,7 @@ env:
 jobs:
   benchmark:
     name: ${{ inputs.cache_lane == 'rolling' && 'Commit' || 'Fresh' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner_label }}
     timeout-minutes: 180
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
