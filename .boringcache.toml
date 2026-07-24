@@ -1,0 +1,6 @@
+workspace = "boringcache/benchmark-chroma"
+
+# Docker BuildKit registry cache qualification benchmark. The OCI cache is
+# the only measured BoringCache surface, so there are no archive entries.
+# Keep the upstream rust/Dockerfile unchanged; an in-Docker sccache variant
+# would be a separate experiment rather than part of this proof.
