@@ -2,6 +2,9 @@
 
 Experimental Chroma Docker cache qualification benchmark for BoringCache versus GitHub Actions cache.
 
+Stable BoringCache workflows install the verified CLI `v1.14.0` release;
+canary dispatches must use an exact immutable CLI tag.
+
 Chroma already has a serious Docker caching setup. Its pull-request workflow
 uses Blacksmith's persistent BuildKit cache, builds the CI images once, and
 then lets downstream jobs clone the warmed snapshot. The upstream workflow
@@ -225,5 +228,3 @@ ingestion by the central `boringcache/benchmarks` publisher.
 
 - `BORINGCACHE_RESTORE_TOKEN` for read-only restore and proxy access
 - `BORINGCACHE_SAVE_TOKEN` for trusted write paths
-- `BORINGCACHE_API_TOKEN` only where a single bearer variable is still
-  required for compatibility
