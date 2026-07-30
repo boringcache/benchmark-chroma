@@ -21,6 +21,16 @@ if grep -Fq 'from=dependency-builder' "$rendered"; then
 fi
 [[ "$(grep -Ec '^  cargo chef cook .*--recipe-path recipe.json$' "$rendered")" -eq 1 ]]
 [[ "$(grep -Ec '^  cargo build \$\{build_target\} --workspace ' "$rendered")" -eq 1 ]]
+
+target_mount_line="$(grep -nF 'id=chroma-cargo-target' "$rendered" | cut -d: -f1)"
+registry_mount_line="$(grep -nF 'target=/usr/local/cargo/registry/' "$rendered" | tail -1 | cut -d: -f1)"
+git_mount_line="$(grep -nF 'target=/usr/local/cargo/git/' "$rendered" | tail -1 | cut -d: -f1)"
+fallback_line="$(grep -nF 'cp -a /chroma/target-dependency-seed/. /chroma/target/' "$rendered" | cut -d: -f1)"
+if ! ((target_mount_line < registry_mount_line && registry_mount_line < git_mount_line && git_mount_line < fallback_line)); then
+  echo "Rendered fallback must follow the complete BuildKit mount preamble." >&2
+  exit 1
+fi
+
 source_only_explanation="No \`--mount=type=cache\` on ./target here"
 if grep -Fq "$source_only_explanation" "$rendered"; then
   echo "Rendered Dockerfile retained the source-only no-mount explanation." >&2

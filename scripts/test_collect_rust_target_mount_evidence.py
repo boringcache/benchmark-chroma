@@ -14,6 +14,8 @@ assert spec is not None and spec.loader is not None
 module = module_from_spec(spec)
 spec.loader.exec_module(module)
 parse_events = module.parse_events
+parse_observability_events = module.parse_observability_events
+merge_events = module.merge_events
 summarize = module.summarize
 
 
@@ -33,6 +35,37 @@ class CollectRustTargetMountEvidenceTest(unittest.TestCase):
         self.assertEqual(payload["compressed_bytes_delta"], 61)
         self.assertEqual(payload["current_uncompressed_bytes"], 50_000_000)
         self.assertEqual(payload["current_files"], 120)
+        self.assertTrue(payload["publish_complete"])
+
+    def test_uses_terminal_publish_events_from_managed_trace(self) -> None:
+        log = '''
+#8 boringcache cache mount hydrate cacheID="/chroma-cargo-target" status=miss archive="target-new" http_status=404
+'''
+        trace = '''
+{"operation":"cache_session_summary","buildkit":{"mountcache":{"samples":[{"event":"mountcache_publish_archive_built","cache_id":"/chroma-cargo-target","compressed_bytes":739526718,"uncompressed_bytes":3464012613,"file_count":8915},{"event":"mountcache_publish_done","cache_id":"/chroma-cargo-target","compressed_bytes":739526718,"uncompressed_bytes":3464012613,"file_count":8915}]}}}
+'''
+        pattern = "^/?chroma-cargo-target$"
+        payload = summarize(
+            merge_events(
+                parse_events(log, pattern),
+                parse_observability_events(trace, pattern),
+            ),
+            pattern,
+        )
+
+        self.assertEqual(payload["classification"], "seeded")
+        self.assertEqual(payload["current_compressed_bytes"], 739_526_718)
+        self.assertEqual(payload["current_files"], 8_915)
+        self.assertTrue(payload["publish_complete"])
+
+    def test_rejects_miss_without_terminal_publish_evidence(self) -> None:
+        log = '''
+#8 boringcache cache mount hydrate cacheID="/chroma-cargo-target" status=miss archive="target-new" http_status=404
+'''
+        events = parse_events(log, "^/?chroma-cargo-target$")
+
+        with self.assertRaisesRegex(ValueError, "did not complete"):
+            summarize(events, "^/?chroma-cargo-target$")
 
 
 if __name__ == "__main__":

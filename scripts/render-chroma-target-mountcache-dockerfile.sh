@@ -33,7 +33,7 @@ rendered_dockerfile="$(mktemp "$(dirname "$output_dockerfile")/chroma-target-mou
 trap 'rm -f "$rendered_dockerfile"' EXIT
 
 awk '
-  BEGIN { dependency_stage = 0; build_mount = 0; cooked = 0; skip_shadow_comment = 0 }
+  BEGIN { dependency_stage = 0; build_mount = 0; cooked = 0; injecting_build = 0; skip_shadow_comment = 0 }
   /^FROM chef AS builder$/ {
     print "FROM chef AS dependency-builder"
     dependency_stage += 1
@@ -63,16 +63,26 @@ awk '
     print "RUN --mount=type=cache,id=chroma-cargo-target,sharing=locked,target=/chroma/target \\"
     sub(/^RUN /, "  ")
     print
+    injecting_build = 1
+    next
+  }
+  injecting_build && /^  --mount=type=cache,/ {
+    print
+    next
+  }
+  injecting_build {
     print "  if [ -z \"$(find /chroma/target -mindepth 1 -maxdepth 1 -print -quit)\" ]; then \\"
     print "    cp -a /chroma/target-dependency-seed/. /chroma/target/; \\"
     print "  fi && \\"
+    print
     build_mount += 1
     cooked = 0
+    injecting_build = 0
     next
   }
   { print }
   END {
-    if (dependency_stage != 1 || build_mount != 1) {
+    if (dependency_stage != 1 || build_mount != 1 || injecting_build != 0) {
       printf "Unsupported Chroma Dockerfile: rendered %d dependency stages and %d target mounts.\n", dependency_stage, build_mount > "/dev/stderr"
       exit 1
     }
