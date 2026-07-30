@@ -11,8 +11,14 @@ rendered="$test_root/Dockerfile"
 
 [[ "$(grep -Fc 'FROM chef AS dependency-builder' "$rendered")" -eq 1 ]]
 [[ "$(grep -Fc 'FROM dependency-builder AS builder' "$rendered")" -eq 1 ]]
+[[ "$(grep -Fc 'mv /chroma/target /chroma/target-dependency-seed' "$rendered")" -eq 1 ]]
 [[ "$(grep -Fc 'id=chroma-cargo-target' "$rendered")" -eq 1 ]]
-[[ "$(grep -Fc 'from=dependency-builder,source=/chroma/target,target=/chroma/target' "$rendered")" -eq 1 ]]
+[[ "$(grep -Fc 'sharing=locked,target=/chroma/target' "$rendered")" -eq 1 ]]
+[[ "$(grep -Fc 'cp -a /chroma/target-dependency-seed/. /chroma/target/' "$rendered")" -eq 1 ]]
+if grep -Fq 'from=dependency-builder' "$rendered"; then
+  echo "Rendered cache mount must be empty before the offloader hydrates it." >&2
+  exit 1
+fi
 [[ "$(grep -Ec '^  cargo chef cook .*--recipe-path recipe.json$' "$rendered")" -eq 1 ]]
 [[ "$(grep -Ec '^  cargo build \$\{build_target\} --workspace ' "$rendered")" -eq 1 ]]
 source_only_explanation="No \`--mount=type=cache\` on ./target here"

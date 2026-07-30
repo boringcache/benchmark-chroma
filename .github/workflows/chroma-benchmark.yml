@@ -67,7 +67,7 @@ jobs:
       target_mountcache: ${{ inputs.target_mountcache }}
       target_mountcache_renderer: scripts/render-chroma-target-mountcache-dockerfile.sh
       target_mountcache_dockerfile_output: .benchmark/chroma-target-mountcache.Dockerfile
-      target_mountcache_id_pattern: ^chroma-cargo-target$
+      target_mountcache_id_pattern: ^/?chroma-cargo-target$
       docker_context: upstream
       docker_build_args: |
         --target

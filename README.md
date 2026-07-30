@@ -43,9 +43,9 @@ Docker-plus-sccache path could still create an angle.
 - The primary GHA-versus-BoringCache workflow does not add `sccache` inside
   the image. It is an unchanged-upstream-Dockerfile comparison.
 - Manual primary, sccache, and full-Bake runs can opt into `target_mountcache`. The
-  generated Dockerfile seeds a native Cargo target mount from the cargo-chef
-  dependency stage, so cooked dependencies remain available even when the
-  mount is empty. GHA runs that empty-mount-safe control; BoringCache also
+  generated Dockerfile keeps cargo-chef output in an ordinary-layer seed, then
+  copies it only when an initially empty Cargo target mount was not hydrated.
+  GHA runs that empty-mount-safe control; BoringCache also
   offloads the mount between builders under an isolated benchmark suffix.
   Each BoringCache run publishes a machine-readable target archive size and
   growth artifact; the option never changes the existing baseline scopes.

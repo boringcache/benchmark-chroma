@@ -42,13 +42,16 @@ awk '
   /^  cargo chef cook .*--recipe-path recipe.json$/ {
     print
     print ""
-    print "# Benchmark option: preserve first-party Cargo state without shadowing cooked dependencies."
+    print "# Keep cargo-chef output in an ordinary layer so the cache mount starts empty for hydration."
+    print "RUN mv /chroma/target /chroma/target-dependency-seed"
+    print ""
+    print "# Benchmark option: preserve first-party Cargo state with an empty-cache fallback."
     print "FROM dependency-builder AS builder"
     cooked = 1
     next
   }
   cooked && /^# No `--mount=type=cache` on \.\/target here:/ {
-    print "# Seed the target mount from the cargo-chef layer; an empty mount remains a valid fallback."
+    print "# Seed only after hydration so a remote mount can win over the cargo-chef fallback."
     skip_shadow_comment = 1
     next
   }
@@ -57,9 +60,12 @@ awk '
     next
   }
   cooked && /^RUN --mount=type=cache,sharing=locked,target=\/usr\/local\/cargo\/registry\// {
-    print "RUN --mount=type=cache,id=chroma-cargo-target,sharing=locked,from=dependency-builder,source=/chroma/target,target=/chroma/target \\"
+    print "RUN --mount=type=cache,id=chroma-cargo-target,sharing=locked,target=/chroma/target \\"
     sub(/^RUN /, "  ")
     print
+    print "  if [ -z \"$(find /chroma/target -mindepth 1 -maxdepth 1 -print -quit)\" ]; then \\"
+    print "    cp -a /chroma/target-dependency-seed/. /chroma/target/; \\"
+    print "  fi && \\"
     build_mount += 1
     cooked = 0
     next
