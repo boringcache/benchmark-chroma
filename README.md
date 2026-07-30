@@ -2,7 +2,7 @@
 
 Experimental Chroma Docker cache qualification benchmark for BoringCache versus GitHub Actions cache.
 
-Stable BoringCache workflows install the verified CLI `v1.14.0` release;
+Stable BoringCache workflows install the verified CLI `v1.15.0` release;
 canary dispatches must use an exact immutable CLI tag.
 
 Chroma already has a serious Docker caching setup. Its pull-request workflow
