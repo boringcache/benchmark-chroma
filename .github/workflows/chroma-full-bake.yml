@@ -20,12 +20,17 @@ on:
         description: "Exact BoringCache CLI release tag."
         required: true
         type: string
-        default: "vcli-canary-9cd861a8d841"
+        default: "v1.15.0"
       buildkit_image:
         description: "Exact managed BoringCache BuildKit image tag or digest."
         required: true
         type: string
         default: "ghcr.io/boringcache/buildkit@sha256:9b44a5426d7e32db41584c8d7d9f5251b0ad8348427e15849b541418030e7dab"
+      target_mountcache:
+        description: "Use and offload a Cargo target cache mount for every Rust Bake target."
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref_name }}
@@ -45,15 +50,12 @@ jobs:
         include:
           - label: BC
             benchmark_id: chroma-full-bake-control
-            docker_bake_files: |
-              .github/actions/tilt-setup-prebuild/docker-bake.hcl
+            sccache_bake_file: ""
             derive_sccache_dockerfile: false
             docker_tool_cache: ""
           - label: BC tool
             benchmark_id: chroma-full-bake-tool-v2
-            docker_bake_files: |
-              .github/actions/tilt-setup-prebuild/docker-bake.hcl
-              ../fixtures/chroma-sccache-bake.override.hcl
+            sccache_bake_file: ../fixtures/chroma-sccache-bake.override.hcl
             derive_sccache_dockerfile: true
             docker_tool_cache: sccache
     uses: ./.github/workflows/reusable-docker-buildkit-benchmark.yml
@@ -61,12 +63,19 @@ jobs:
       strategy: boringcache
       cache_lane: ${{ inputs.cache_lane }}
       runner_label: ubuntu-latest-m
-      benchmark_id: ${{ matrix.benchmark_id }}
+      benchmark_id: ${{ format('{0}{1}', matrix.benchmark_id, inputs.target_mountcache && '-target-mountcache' || '') }}
       project_repo: chroma-core/chroma
       project_ref: ${{ inputs.project_ref }}
       dockerfile_path: upstream/rust/Dockerfile
+      target_mountcache: ${{ inputs.target_mountcache }}
+      target_mountcache_renderer: scripts/render-chroma-target-mountcache-dockerfile.sh
+      target_mountcache_dockerfile_output: upstream/rust/Dockerfile.target-mountcache
+      target_mountcache_id_pattern: ^chroma-cargo-target$
       docker_context: upstream
-      docker_bake_files: ${{ matrix.docker_bake_files }}
+      docker_bake_files: |
+        .github/actions/tilt-setup-prebuild/docker-bake.hcl
+        ${{ inputs.target_mountcache && '../fixtures/chroma-target-mountcache-bake.override.hcl' || '' }}
+        ${{ matrix.sccache_bake_file }}
       docker_bake_targets: |
         rust-log-service
         rust-sysdb-service

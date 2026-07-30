@@ -39,6 +39,11 @@ on:
         required: false
         type: string
         default: ""
+      target_mountcache:
+        description: "Use a Cargo target cache mount alongside the selected compiler-cache shape."
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref_name }}
@@ -71,11 +76,16 @@ jobs:
       strategy: boringcache
       cache_lane: ${{ inputs.cache_lane }}
       runner_label: ${{ inputs.runner_label }}
-      benchmark_id: ${{ format('{0}{1}', matrix.benchmark_id, inputs.benchmark_id_suffix) }}
+      benchmark_id: ${{ format('{0}{1}{2}', matrix.benchmark_id, inputs.target_mountcache && '-target-mountcache' || '', inputs.benchmark_id_suffix) }}
       project_repo: chroma-core/chroma
       project_ref: ${{ inputs.project_ref }}
-      dockerfile_path: ${{ matrix.dockerfile_path }}
+      dockerfile_path: ${{ inputs.target_mountcache && (matrix.derive_sccache_dockerfile && '.benchmark/chroma-target-mountcache-sccache.Dockerfile' || '.benchmark/chroma-target-mountcache.Dockerfile') || matrix.dockerfile_path }}
+      target_mountcache: ${{ inputs.target_mountcache }}
+      target_mountcache_renderer: scripts/render-chroma-target-mountcache-dockerfile.sh
+      target_mountcache_dockerfile_output: .benchmark/chroma-target-mountcache.Dockerfile
+      target_mountcache_id_pattern: ^chroma-cargo-target$
       derive_sccache_dockerfile: ${{ matrix.derive_sccache_dockerfile }}
+      sccache_dockerfile_output: ${{ inputs.target_mountcache && '.benchmark/chroma-target-mountcache-sccache.Dockerfile' || '.benchmark/chroma-sccache.Dockerfile' }}
       docker_tool_cache: ${{ matrix.docker_tool_cache }}
       docker_context: upstream
       docker_build_args: |
