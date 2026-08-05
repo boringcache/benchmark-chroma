@@ -17,18 +17,34 @@ on:
         type: string
         default: ""
       cli_version:
-        description: "Optional BoringCache CLI release tag."
+        description: "Optional exact BoringCache CLI release tag."
         required: false
         type: string
         default: ""
       benchmark_id_suffix:
-        description: "Optional suffix for isolated comparison runs."
+        description: "Optional suffix for an isolated comparison run."
         required: false
         type: string
         default: ""
   push:
     branches: [main]
-    paths: [".gitmodules", "upstream"]
+    paths:
+      - ".boringcache.toml"
+      - ".gitmodules"
+      - ".github/workflows/chroma-benchmark.yml"
+      - ".github/workflows/reusable-chroma-docker-benchmark.yml"
+      - "scripts/prepare-source.sh"
+      - "scripts/scope-boringcache-run.sh"
+      - "upstream"
+  pull_request:
+    paths:
+      - ".boringcache.toml"
+      - ".gitmodules"
+      - ".github/workflows/chroma-benchmark.yml"
+      - ".github/workflows/reusable-chroma-docker-benchmark.yml"
+      - "scripts/prepare-source.sh"
+      - "scripts/scope-boringcache-run.sh"
+      - "upstream"
   schedule:
     - cron: "0 3 * * 1"
 
@@ -52,23 +68,11 @@ jobs:
             strategy: actions-cache
           - label: BoringCache
             strategy: boringcache
-    uses: ./.github/workflows/reusable-docker-buildkit-benchmark.yml
+    uses: ./.github/workflows/reusable-chroma-docker-benchmark.yml
     with:
       strategy: ${{ matrix.strategy }}
       cache_lane: ${{ github.event_name == 'push' && 'rolling' || github.event_name == 'workflow_dispatch' && inputs.cache_lane || 'fresh' }}
       benchmark_id: ${{ format('chroma{0}', inputs.benchmark_id_suffix) }}
-      project_repo: chroma-core/chroma
-      dockerfile_path: upstream/rust/Dockerfile
-      docker_context: upstream
-      docker_build_args: |
-        --target
-        cli
-        --build-arg
-        LOG_SERVICE_CARGO_FEATURES=faults
-      image_tag: chroma-benchmark:latest
-      free_disk_space: true
-      cli_platform: linux-amd64
       cli_version: ${{ inputs.cli_version }}
-      buildkit_image: ${{ matrix.strategy == 'actions-cache' && 'mirror.gcr.io/moby/buildkit:buildx-stable-1' || inputs.buildkit_image }}
-      benchmark_workspace: ${{ github.repository }}
+      buildkit_image: ${{ inputs.buildkit_image }}
     secrets: inherit

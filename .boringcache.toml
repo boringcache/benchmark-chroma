@@ -1,5 +1,4 @@
 workspace = "boringcache/benchmark-chroma"
 
-# Managed BuildKit is the only BoringCache cache surface measured here, so
-# there are no archive entries. Keep the upstream rust/Dockerfile unchanged;
-# an in-Docker sccache variant would be a separate experiment.
+[adapters.docker]
+tag = "chroma-docker-local"
