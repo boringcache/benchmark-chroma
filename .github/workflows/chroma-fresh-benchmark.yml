@@ -1,6 +1,6 @@
-name: "Chroma Docker Benchmark"
+name: "Chroma Docker Fresh"
 run-name: >-
-  ${{ format('Benchmark {0} | {1}', inputs.cli_version != '' && 'Canary' || 'Rolling', github.event_name == 'push' && 'Upstream update' || format('Manual dispatch ({0})', github.ref_name)) }}
+  ${{ format('Benchmark {0} | {1}', github.event_name == 'pull_request' && 'Validation' || inputs.cli_version != '' && 'Canary' || 'Fresh', github.event_name == 'schedule' && 'Weekly' || github.event_name == 'pull_request' && format('PR #{0}', github.event.pull_request.number) || format('Manual dispatch ({0})', github.ref_name)) }}
 
 on:
   workflow_dispatch:
@@ -25,9 +25,18 @@ on:
         required: false
         type: string
         default: ""
-  push:
-    branches: [main]
-    paths: [".gitmodules", "upstream"]
+  schedule:
+    - cron: "0 3 * * 1"
+  pull_request:
+    paths:
+      - ".boringcache.toml"
+      - ".gitmodules"
+      - ".github/actions/chroma-docker-benchmark/**"
+      - ".github/workflows/chroma-benchmark.yml"
+      - ".github/workflows/chroma-fresh-benchmark.yml"
+      - "scripts/prepare-source.sh"
+      - "scripts/scope-boringcache-run.sh"
+      - "upstream"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref_name }}
@@ -44,8 +53,8 @@ env:
   BORINGCACHE_NO_GIT: "true"
 
 jobs:
-  commit:
-    name: ${{ matrix.provider }} Chroma commit
+  cold:
+    name: ${{ matrix.provider }} Chroma cold
     if: inputs.runner_label == '' || github.ref_name == 'main'
     runs-on: ${{ github.event_name == 'workflow_dispatch' && github.ref_name == 'main' && inputs.runner_label || 'ubuntu-latest' }}
     timeout-minutes: 180
@@ -62,8 +71,32 @@ jobs:
       - uses: ./.github/actions/chroma-docker-benchmark
         with:
           strategy: ${{ matrix.strategy }}
-          cache_lane: rolling
+          cache_lane: fresh
           phase: publish
+          benchmark_id: ${{ format('chroma{0}', inputs.benchmark_id_suffix) }}
+          cli_version: ${{ inputs.cli_version }}
+          buildkit_image: ${{ inputs.buildkit_image }}
+
+  warm:
+    name: ${{ matrix.provider }} Chroma warm
+    needs: cold
+    runs-on: ${{ github.event_name == 'workflow_dispatch' && github.ref_name == 'main' && inputs.runner_label || 'ubuntu-latest' }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - provider: GitHub Actions
+            strategy: actions-cache
+          - provider: BoringCache
+            strategy: boringcache
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/chroma-docker-benchmark
+        with:
+          strategy: ${{ matrix.strategy }}
+          cache_lane: fresh
+          phase: warm
           benchmark_id: ${{ format('chroma{0}', inputs.benchmark_id_suffix) }}
           cli_version: ${{ inputs.cli_version }}
           buildkit_image: ${{ inputs.buildkit_image }}
