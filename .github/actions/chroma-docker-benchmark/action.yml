@@ -69,7 +69,6 @@ runs:
           --build-arg LOG_SERVICE_CARGO_FEATURES=faults \
           --cache-from "type=gha,scope=${CACHE_SCOPE}" \
           --cache-to "type=gha,scope=${CACHE_SCOPE},mode=max" \
-          --load \
           upstream
 
     - name: Publish with BoringCache
@@ -87,7 +86,7 @@ runs:
         tags: latest
         target: cli
         build-args: LOG_SERVICE_CARGO_FEATURES=faults
-        load: true
+        load: false
         fail-on-cache-error: true
         metadata-hints: benchmark=${{ inputs.benchmark_id }},phase=${{ inputs.cache_lane == 'rolling' && 'rolling' || 'fresh-cold' }}
         managed-buildkit-image: ${{ inputs.buildkit_image }}
@@ -107,12 +106,9 @@ runs:
         tags: latest
         target: cli
         build-args: LOG_SERVICE_CARGO_FEATURES=faults
-        load: true
+        load: false
         fail-on-cache-miss: true
         fail-on-cache-error: true
         metadata-hints: benchmark=${{ inputs.benchmark_id }},phase=fresh-warm
         managed-buildkit-image: ${{ inputs.buildkit_image }}
 
-    - name: Verify the Chroma image
-      shell: bash
-      run: docker image inspect chroma-benchmark:latest >/dev/null
