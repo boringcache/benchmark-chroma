@@ -10,6 +10,9 @@ inputs:
     required: true
   benchmark_id:
     required: true
+  push_image:
+    required: false
+    default: "false"
   cli_version:
     required: false
     default: ""
@@ -59,7 +62,7 @@ runs:
         echo "source_repository=$(printf '%s' "${source_url#https://github.com/}" | sed 's/\.git$//')" >> "$GITHUB_OUTPUT"
         echo "source_sha=$(git -C upstream rev-parse HEAD)" >> "$GITHUB_OUTPUT"
     - name: Log in to the GitHub Container Registry
-      if: github.event_name != 'pull_request'
+      if: inputs.push_image == 'true' && github.ref == 'refs/heads/main'
       uses: docker/login-action@v3
       with:
         registry: ghcr.io
@@ -91,7 +94,7 @@ runs:
         file: upstream/rust/Dockerfile
         target: cli
         tags: ghcr.io/${{ github.repository_owner }}/chroma-benchmark:actions-cache
-        push: ${{ github.event_name != 'pull_request' }}
+        push: ${{ inputs.push_image == 'true' && github.ref == 'refs/heads/main' }}
         build-args: LOG_SERVICE_CARGO_FEATURES=faults
         provenance: false
         cache-from: type=gha,scope=${{ steps.scope.outputs.cache_scope }}
@@ -111,7 +114,7 @@ runs:
         dockerfile: upstream/rust/Dockerfile
         image: ghcr.io/${{ github.repository_owner }}/chroma-benchmark
         tags: boringcache
-        push: ${{ github.event_name != 'pull_request' }}
+        push: ${{ inputs.push_image == 'true' && github.ref == 'refs/heads/main' }}
         target: cli
         build-args: LOG_SERVICE_CARGO_FEATURES=faults
         load: false
@@ -133,7 +136,7 @@ runs:
         dockerfile: upstream/rust/Dockerfile
         image: ghcr.io/${{ github.repository_owner }}/chroma-benchmark
         tags: boringcache
-        push: ${{ github.event_name != 'pull_request' }}
+        push: ${{ inputs.push_image == 'true' && github.ref == 'refs/heads/main' }}
         target: cli
         build-args: LOG_SERVICE_CARGO_FEATURES=faults
         load: false
