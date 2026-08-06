@@ -58,6 +58,13 @@ runs:
         source_url="$(git config -f .gitmodules submodule.upstream.url)"
         echo "source_repository=$(printf '%s' "${source_url#https://github.com/}" | sed 's/\.git$//')" >> "$GITHUB_OUTPUT"
         echo "source_sha=$(git -C upstream rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+    - name: Log in to the GitHub Container Registry
+      if: github.event_name != 'pull_request'
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ github.token }}
     - name: Start the provider setup timer
       id: setup_timer
       shell: bash
@@ -83,7 +90,8 @@ runs:
         context: upstream
         file: upstream/rust/Dockerfile
         target: cli
-        tags: chroma-benchmark:latest
+        tags: ghcr.io/${{ github.repository_owner }}/chroma-benchmark:actions-cache
+        push: ${{ github.event_name != 'pull_request' }}
         build-args: LOG_SERVICE_CARGO_FEATURES=faults
         provenance: false
         cache-from: type=gha,scope=${{ steps.scope.outputs.cache_scope }}
@@ -101,8 +109,9 @@ runs:
         working-directory: .
         context: upstream
         dockerfile: upstream/rust/Dockerfile
-        image: chroma-benchmark
-        tags: latest
+        image: ghcr.io/${{ github.repository_owner }}/chroma-benchmark
+        tags: boringcache
+        push: ${{ github.event_name != 'pull_request' }}
         target: cli
         build-args: LOG_SERVICE_CARGO_FEATURES=faults
         load: false
@@ -122,8 +131,9 @@ runs:
         working-directory: .
         context: upstream
         dockerfile: upstream/rust/Dockerfile
-        image: chroma-benchmark
-        tags: latest
+        image: ghcr.io/${{ github.repository_owner }}/chroma-benchmark
+        tags: boringcache
+        push: ${{ github.event_name != 'pull_request' }}
         target: cli
         build-args: LOG_SERVICE_CARGO_FEATURES=faults
         load: false
