@@ -58,18 +58,16 @@ runs:
 
     - name: Build with the GitHub Actions cache
       if: inputs.strategy == 'actions-cache'
-      shell: bash
-      env:
-        CACHE_SCOPE: ${{ steps.scope.outputs.cache_scope }}
-      run: |
-        docker buildx build \
-          --file upstream/rust/Dockerfile \
-          --target cli \
-          --tag chroma-benchmark:latest \
-          --build-arg LOG_SERVICE_CARGO_FEATURES=faults \
-          --cache-from "type=gha,scope=${CACHE_SCOPE}" \
-          --cache-to "type=gha,scope=${CACHE_SCOPE},mode=max" \
-          upstream
+      uses: docker/build-push-action@v6
+      with:
+        context: upstream
+        file: upstream/rust/Dockerfile
+        target: cli
+        tags: chroma-benchmark:latest
+        build-args: LOG_SERVICE_CARGO_FEATURES=faults
+        provenance: false
+        cache-from: type=gha,scope=${{ steps.scope.outputs.cache_scope }}
+        cache-to: type=gha,scope=${{ steps.scope.outputs.cache_scope }},mode=max
 
     - name: Publish with BoringCache
       if: inputs.strategy == 'boringcache' && inputs.phase == 'publish'
