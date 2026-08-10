@@ -2,3 +2,13 @@ workspace = "boringcache/benchmark-chroma"
 
 [adapters.docker]
 tag = "chroma-docker-local"
+metadata-hints = ["benchmark=chroma", "upstream-job=build-amd64"]
+command = [
+  "docker", "buildx", "build",
+  "--file", "upstream/rust/Dockerfile",
+  "--target", "cli",
+  "--platform", "linux/amd64",
+  "--build-arg", "RELEASE_MODE=1",
+  "--tag", "chroma-benchmark:local",
+  "upstream",
+]
