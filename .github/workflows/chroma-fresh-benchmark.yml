@@ -34,8 +34,11 @@ on:
       - ".github/actions/chroma-docker-benchmark/**"
       - ".github/workflows/chroma-benchmark.yml"
       - ".github/workflows/chroma-fresh-benchmark.yml"
+      - "docker/chroma.Dockerfile"
       - "scripts/prepare-source.sh"
       - "scripts/scope-boringcache-run.sh"
+      - "scripts/sync_upstream_dockerfile.py"
+      - "scripts/verify-upstream-recipe.py"
       - "upstream"
 
 concurrency:

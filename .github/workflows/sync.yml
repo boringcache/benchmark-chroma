@@ -35,6 +35,8 @@ jobs:
 
           git submodule sync --recursive
           git submodule update --init --remote --checkout upstream
+          python3 -B ./scripts/sync_upstream_dockerfile.py --update
+          python3 -B ./scripts/verify-upstream-recipe.py
 
           github_repo_slug() {
             local url="$1"
@@ -56,7 +58,7 @@ jobs:
             exit 0
           fi
 
-          git add upstream
+          git add upstream docker/chroma.Dockerfile
           git commit -m "Update upstream to ${upstream_repo}@${commit_sha}"
           git push origin HEAD:main
           echo "updated=true" >> "$GITHUB_OUTPUT"

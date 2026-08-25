@@ -14,6 +14,11 @@ if ! grep -Fq 'tag = "chroma-docker-local"' "$config_path"; then
   echo "Missing expected local Docker tag in ${config_path}" >&2
   exit 1
 fi
+if ! grep -Fq 'tag = "chroma-sccache-local"' "$config_path"; then
+  echo "Missing expected local sccache tag in ${config_path}" >&2
+  exit 1
+fi
 
 sed -i "s/tag = \"chroma-docker-local\"/tag = \"${scope}-docker\"/" "$config_path"
-echo "Scoped the BoringCache Docker tag to ${scope}."
+sed -i "s/tag = \"chroma-sccache-local\"/tag = \"${scope}-sccache\"/" "$config_path"
+echo "Scoped the BoringCache Docker and sccache tags to ${scope}."
