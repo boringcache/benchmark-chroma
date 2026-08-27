@@ -32,6 +32,7 @@ on:
       - ".gitmodules"
       - ".github/actions/chroma-docker-benchmark/action.yml"
       - "docker/chroma.Dockerfile"
+      - "scripts/benchmark-report.py"
       - "scripts/scope-boringcache-run.sh"
       - "scripts/sync_upstream_dockerfile.py"
       - "scripts/verify-upstream-recipe.py"

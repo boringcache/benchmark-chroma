@@ -125,7 +125,9 @@ runs:
         push: ${{ inputs.push_image == 'true' && github.ref == 'refs/heads/main' }}
         target: cli
         platforms: linux/amd64
-        build-args: RELEASE_MODE=1
+        build-args: |
+          RELEASE_MODE=1
+          BORINGCACHE_BENCHMARK_SCCACHE_PROOF=1
         load: false
         docker-tool-cache: sccache
         docker-mount-cache: true
@@ -150,7 +152,9 @@ runs:
         push: ${{ inputs.push_image == 'true' && github.ref == 'refs/heads/main' }}
         target: cli
         platforms: linux/amd64
-        build-args: RELEASE_MODE=1
+        build-args: |
+          RELEASE_MODE=1
+          BORINGCACHE_BENCHMARK_SCCACHE_PROOF=1
         load: false
         docker-tool-cache: sccache
         docker-mount-cache: true
@@ -180,6 +184,7 @@ runs:
         CACHE_IMPORT_REFS: ${{ steps.publish.outputs.docker-cache-from-refs || steps.restore.outputs.docker-cache-from-refs }}
         CACHE_TAG: ${{ steps.publish.outputs.cache-tag || steps.restore.outputs.cache-tag }}
         CACHE_WORKSPACE: ${{ steps.publish.outputs.workspace || steps.restore.outputs.workspace }}
+        SCCACHE_PROOF: ${{ inputs.strategy == 'boringcache' && 'true' || '' }}
         EVIDENCE_PATH: ${{ steps.publish.outputs.evidence-path || steps.restore.outputs.evidence-path }}
         SOURCE_REPOSITORY: ${{ steps.scope.outputs.source_repository }}
         SOURCE_SHA: ${{ steps.scope.outputs.source_sha }}
@@ -199,6 +204,7 @@ runs:
           --cache-import-refs "$CACHE_IMPORT_REFS" \
           --cache-tag "$CACHE_TAG" \
           --workspace "$CACHE_WORKSPACE" \
+          --sccache-proof "$SCCACHE_PROOF" \
           --source-repository "$SOURCE_REPOSITORY" \
           --source-sha "$SOURCE_SHA" \
           --evidence "$EVIDENCE_PATH"

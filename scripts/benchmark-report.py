@@ -69,6 +69,7 @@ def parse_args() -> argparse.Namespace:
     phase.add_argument("--cache-import-refs", default="")
     phase.add_argument("--cache-tag", default="")
     phase.add_argument("--workspace", default="")
+    phase.add_argument("--sccache-proof", default="")
     phase.add_argument("--source-repository", default="")
     phase.add_argument("--source-sha", default="")
     phase.add_argument("--evidence")
@@ -83,7 +84,11 @@ def parse_args() -> argparse.Namespace:
 
 
 def variant_slug(variant: str) -> str:
-    return "".join(character if character.isalnum() else "-" for character in variant).strip("-").lower()
+    return (
+        "".join(character if character.isalnum() else "-" for character in variant)
+        .strip("-")
+        .lower()
+    )
 
 
 def optional_bool(value: str) -> bool | None:
@@ -151,6 +156,7 @@ def evidence_product_refs(evidence: dict[str, Any] | None) -> dict[str, Any]:
 def write_phase(args: argparse.Namespace) -> int:
     cache_hit = optional_bool(args.cache_hit)
     import_ready = optional_bool(args.cache_import_ready)
+    sccache_proof = optional_bool(args.sccache_proof)
     evidence = load_evidence(args.evidence)
     total_seconds = args.restore_or_setup_seconds + args.build_seconds
 
@@ -172,11 +178,20 @@ def write_phase(args: argparse.Namespace) -> int:
         "cache": {
             "hit": cache_hit,
             "import_ready": import_ready,
-            "import_refs": len([ref for ref in args.cache_import_refs.splitlines() if ref.strip()]),
+            "import_refs": len(
+                [ref for ref in args.cache_import_refs.splitlines() if ref.strip()]
+            ),
             "tag": args.cache_tag or None,
             "workspace": args.workspace or None,
             "storage_bytes": None,
             "storage_source": None,
+        },
+        "tool_cache": {
+            "tool": "sccache" if sccache_proof is not None else None,
+            "verified": sccache_proof,
+            "proof": (
+                "in-build cacheable Rust request" if sccache_proof is True else None
+            ),
         },
         "source": {
             "repository": args.source_repository or None,
@@ -191,7 +206,10 @@ def write_phase(args: argparse.Namespace) -> int:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     slug = f"-{variant_slug(args.variant)}" if args.variant else ""
-    output_path = output_dir / f"{args.benchmark}-{args.strategy}{slug}-{args.lane}-{args.phase}.json"
+    output_path = (
+        output_dir
+        / f"{args.benchmark}-{args.strategy}{slug}-{args.lane}-{args.phase}.json"
+    )
     output_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
     print(output_path)
     return 0
@@ -206,7 +224,9 @@ def load_phases(input_dir: Path) -> list[dict[str, Any]]:
     return payloads
 
 
-def merge_lane(benchmark: str, strategy: str, lane: str, phases: list[dict[str, Any]]) -> dict[str, Any]:
+def merge_lane(
+    benchmark: str, strategy: str, lane: str, phases: list[dict[str, Any]]
+) -> dict[str, Any]:
     by_phase = {payload["phase"]: payload for payload in phases}
     runs: dict[str, Any] = {}
     for phase_name, fields in PHASE_RUN_FIELDS.items():
@@ -233,17 +253,22 @@ def merge_lane(benchmark: str, strategy: str, lane: str, phases: list[dict[str, 
         for payload in phases
         if isinstance(payload.get("product_refs"), dict) and payload.get("product_refs")
     ]
-    product_refs = reference.get("product_refs") or (phase_product_refs[0] if phase_product_refs else {})
+    product_refs = reference.get("product_refs") or (
+        phase_product_refs[0] if phase_product_refs else {}
+    )
     product_refs_consistent = None
     if phase_product_refs:
         signatures = {json.dumps(refs, sort_keys=True) for refs in phase_product_refs}
-        product_refs_consistent = len(phase_product_refs) == len(phases) and len(signatures) == 1
+        product_refs_consistent = (
+            len(phase_product_refs) == len(phases) and len(signatures) == 1
+        )
 
     observations = {
         payload["phase"]: {
             "cache_hit": payload["cache"]["hit"],
             "cache_import_ready": payload["cache"]["import_ready"],
             "cache_import_refs": payload["cache"].get("import_refs"),
+            "sccache_verified": (payload.get("tool_cache") or {}).get("verified"),
         }
         for payload in phases
     }
@@ -256,8 +281,11 @@ def merge_lane(benchmark: str, strategy: str, lane: str, phases: list[dict[str, 
         "mode": reference["mode"],
         "adapter": reference["adapter"],
         "runs": runs,
-        "speed": {"warm_average_seconds": warm["timing"]["total_seconds"] if warm else None},
+        "speed": {
+            "warm_average_seconds": warm["timing"]["total_seconds"] if warm else None
+        },
         "cache": reference["cache"],
+        "tool_cache": reference.get("tool_cache"),
         "source": reference["source"],
         "product_refs": product_refs,
         "product_refs_consistent": product_refs_consistent,
@@ -320,7 +348,20 @@ def cache_state(payload: dict[str, Any]) -> str:
     return "not reported"
 
 
-def render_markdown(title: str, lanes: dict[tuple[str, str, str, str], dict[str, Any]], phases: list[dict[str, Any]]) -> str:
+def tool_cache_state(payload: dict[str, Any]) -> str:
+    tool_cache = payload.get("tool_cache") or {}
+    if tool_cache.get("verified") is True:
+        return "sccache verified"
+    if tool_cache.get("verified") is False:
+        return "sccache not verified"
+    return "not enabled"
+
+
+def render_markdown(
+    title: str,
+    lanes: dict[tuple[str, str, str, str], dict[str, Any]],
+    phases: list[dict[str, Any]],
+) -> str:
     lines = [f"## {title}", ""]
     benchmarks = sorted({payload["benchmark"] for payload in phases})
 
@@ -328,9 +369,15 @@ def render_markdown(title: str, lanes: dict[tuple[str, str, str, str], dict[str,
         if len(benchmarks) > 1:
             lines.append(f"### {benchmark}")
             lines.append("")
-        lines.extend(render_benchmark(benchmark, lanes, phases, depth=4 if len(benchmarks) > 1 else 3))
+        lines.extend(
+            render_benchmark(
+                benchmark, lanes, phases, depth=4 if len(benchmarks) > 1 else 3
+            )
+        )
 
-    source = next((payload["source"] for payload in phases if payload["source"].get("sha")), None)
+    source = next(
+        (payload["source"] for payload in phases if payload["source"].get("sha")), None
+    )
     if source and source.get("repository"):
         lines.append(f"Source: `{source['repository']}@{source['sha'][:7]}`")
         lines.append("")
@@ -368,13 +415,20 @@ def render_benchmark(
 
         lane_providers = sorted(
             {(strategy, variant) for strategy, variant, item in lanes if item == lane},
-            key=lambda entry: (entry[0] != CANDIDATE_STRATEGY, entry[0] != BASELINE_STRATEGY, bool(entry[1]), entry),
+            key=lambda entry: (
+                entry[0] != CANDIDATE_STRATEGY,
+                entry[0] != BASELINE_STRATEGY,
+                bool(entry[1]),
+                entry,
+            ),
         )
 
         lines.append(f"{heading} {lane.capitalize()} lane")
         lines.append("")
-        lines.append("| Provider | Phase | Cache setup | Build | Cache + build | Workflow | Cache |")
-        lines.append("| --- | --- | ---: | ---: | ---: | ---: | --- |")
+        lines.append(
+            "| Provider | Phase | Cache setup | Build | Cache + build | Workflow | Docker cache | Tool cache |"
+        )
+        lines.append("| --- | --- | ---: | ---: | ---: | ---: | --- | --- |")
 
         for phase_name in LANE_PHASES[lane]:
             for strategy, variant in lane_providers:
@@ -398,7 +452,8 @@ def render_benchmark(
                     f"| {format_seconds(timing['build_seconds'])} "
                     f"| {format_seconds(timing['total_seconds'])} "
                     f"| {format_seconds(timing.get('workflow_seconds'))} "
-                    f"| {cache_state(payload)} |"
+                    f"| {cache_state(payload)} "
+                    f"| {tool_cache_state(payload)} |"
                 )
 
         lines.append("")
@@ -410,8 +465,12 @@ def render_benchmark(
                 after = candidate["runs"].get(total_field)
                 if before is None or after is None:
                     continue
-                observed = (candidate.get("phase_observations") or {}).get(phase_name, {})
-                if phase_name != "cold" and not imported(candidate.get("mode"), observed):
+                observed = (candidate.get("phase_observations") or {}).get(
+                    phase_name, {}
+                )
+                if phase_name != "cold" and not imported(
+                    candidate.get("mode"), observed
+                ):
                     lines.append(
                         f"- {PHASE_LABELS[phase_name]}: {PROVIDER_LABELS[CANDIDATE_STRATEGY]} found no cache to import, "
                         "so these timings are not like-for-like."
@@ -436,7 +495,12 @@ def summarize(args: argparse.Namespace) -> int:
 
     grouped: dict[tuple[str, str, str, str], list[dict[str, Any]]] = {}
     for payload in phases:
-        key = (payload["benchmark"], payload["strategy"], payload.get("variant") or "", payload["lane"])
+        key = (
+            payload["benchmark"],
+            payload["strategy"],
+            payload.get("variant") or "",
+            payload["lane"],
+        )
         grouped.setdefault(key, []).append(payload)
 
     lanes = {}

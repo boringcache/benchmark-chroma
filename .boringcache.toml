@@ -9,6 +9,7 @@ command = [
   "--target", "cli",
   "--platform", "linux/amd64",
   "--build-arg", "RELEASE_MODE=1",
+  "--build-arg", "BORINGCACHE_BENCHMARK_SCCACHE_PROOF=1",
   "--tag", "chroma-benchmark:local",
   "upstream",
 ]

@@ -20,6 +20,8 @@ EXPECTED = [
     "linux/amd64",
     "--build-arg",
     "RELEASE_MODE=1",
+    "--build-arg",
+    "BORINGCACHE_BENCHMARK_SCCACHE_PROOF=1",
     "--tag",
     "chroma-benchmark:local",
     "upstream",
@@ -48,6 +50,9 @@ def main() -> int:
             "821a86343191aa1cbab74bd42f9e93c9a63bf85e4742945f40d3ae84193c1c77",
             "sha256sum --check --strict",
             "sccache --version",
+            "ARG BORINGCACHE_BENCHMARK_SCCACHE_PROOF=0",
+            "sccache --show-stats --stats-format=json",
+            '"cache_(hits|misses)"',
             "target=/usr/local/cargo/registry/",
             "target=/usr/local/cargo/git/",
             "ENV CARGO_INCREMENTAL=0",
@@ -92,6 +97,19 @@ def main() -> int:
         require(
             action.count("docker-tool-cache: sccache") == 2,
             "BoringCache sccache cache is not enabled",
+        )
+        require(
+            action.count("BORINGCACHE_BENCHMARK_SCCACHE_PROOF=1") == 2,
+            "BoringCache builds do not require cacheable sccache Rust requests",
+        )
+        require(
+            "SCCACHE_PROOF: ${{ inputs.strategy == 'boringcache' && 'true' || '' }}"
+            in action,
+            "benchmark report does not record successful sccache proof",
+        )
+        require(
+            '--sccache-proof "$SCCACHE_PROOF"' in action,
+            "benchmark report omits sccache proof",
         )
         require(
             action.count("docker-mount-cache: true") == 2,

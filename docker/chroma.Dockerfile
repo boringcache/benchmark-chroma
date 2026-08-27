@@ -107,6 +107,10 @@ RUN cargo chef prepare --recipe-path recipe.json
 # ============================================================================
 FROM chef AS builder
 
+# BEGIN BORINGCACHE BENCHMARK COMPILER CACHE PROOF
+ARG BORINGCACHE_BENCHMARK_SCCACHE_PROOF=0
+# END BORINGCACHE BENCHMARK COMPILER CACHE PROOF
+
 ARG RELEASE_MODE=
 ARG ENABLE_AVX512=
 ARG LOG_SERVICE_CARGO_FEATURES=
@@ -171,7 +175,14 @@ RUN --mount=type=cache,sharing=locked,target=/usr/local/cargo/registry/ \
   build_dir=$( [ "${ADDRESS_SANITIZER}" = "1" ] && echo "x86_64-unknown-linux-gnu/${build_dir}" || echo "${build_dir}" ) && \
   for bin in chroma garbage_collector_service chroma-load log_service heap_tender_service query_service compaction_service work_queue_service fn_consumer sysdb_service spanner_migration; do \
   cp "target/${build_dir}/${bin}" "./${bin}"; \
-  done
+  done && \
+  if [ "${BORINGCACHE_BENCHMARK_SCCACHE_PROOF}" = "1" ]; then \
+  test "${RUSTC_WRAPPER##*/}" = "sccache" && \
+  test -n "${SCCACHE_WEBDAV_ENDPOINT:-}" && \
+  sccache_stats="$(sccache --show-stats --stats-format=json)" && \
+  printf 'BORINGCACHE_SCCACHE_STATS=%s\n' "${sccache_stats}" && \
+  printf '%s\n' "${sccache_stats}" | grep -Eq '"cache_(hits|misses)":\{"counts":\{[^}]*"Rust":[1-9][0-9]*'; \
+  fi
 
 FROM debian:stable-slim AS runner
 ARG ADDRESS_SANITIZER
