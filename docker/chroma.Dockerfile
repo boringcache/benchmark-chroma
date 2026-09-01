@@ -105,11 +105,7 @@ RUN cargo chef prepare --recipe-path recipe.json
 # The subsequent `cargo build` then compiles only the first-party workspace
 # crates, reusing the cooked dependencies already present in ./target.
 # ============================================================================
-FROM chef AS builder
-
-# BEGIN BORINGCACHE BENCHMARK COMPILER CACHE PROOF
-ARG BORINGCACHE_BENCHMARK_SCCACHE_PROOF=0
-# END BORINGCACHE BENCHMARK COMPILER CACHE PROOF
+FROM chef AS cooked
 
 ARG RELEASE_MODE=
 ARG ENABLE_AVX512=
@@ -147,6 +143,17 @@ RUN --mount=type=cache,sharing=locked,target=/usr/local/cargo/registry/ \
   release_flag=$( [ "$RELEASE_MODE" = "1" ] && echo '--release' || echo '' ) && \
   cargo chef cook ${build_target} $(printf -- '-p %s ' $COOK_PACKAGES) ${release_flag} --recipe-path recipe.json
 
+# BEGIN BORINGCACHE BENCHMARK TARGET CACHE STAGE
+# Keep Cargo Chef's dependency output as an ordinary OCI layer, then use it to
+# initialize the persistent target cache whenever that cache is new or absent.
+FROM cooked AS builder
+ARG TARGETARCH
+# END BORINGCACHE BENCHMARK TARGET CACHE STAGE
+
+# BEGIN BORINGCACHE BENCHMARK COMPILER CACHE PROOF
+ARG BORINGCACHE_BENCHMARK_SCCACHE_PROOF=0
+# END BORINGCACHE BENCHMARK COMPILER CACHE PROOF
+
 # --- Workspace compile (first-party crates) ----------------------------------
 COPY idl/ idl/
 COPY Cargo.toml Cargo.toml
@@ -156,9 +163,13 @@ COPY rust/ rust/
 # Note: Using flag ENABLE_AVX512 to build AVX512 optimizations for hnswlib, and
 # AVX for Rust. Once Rust supports AVX512, the target-features will be updated
 # to use AVX512.
-# No `--mount=type=cache` on ./target here: the cooked dependencies live in the
-# layer produced above, and mounting a cache over ./target would shadow them.
-RUN --mount=type=cache,sharing=locked,target=/usr/local/cargo/registry/ \
+# BEGIN BORINGCACHE BENCHMARK PERSISTENT TARGET CACHE
+# Unlike an empty target mount, this cache starts from the `cooked` stage. It
+# preserves Cargo's first-party fingerprints and outputs across source changes
+# without giving up the dependency layer when the mutable cache is unavailable.
+# END BORINGCACHE BENCHMARK PERSISTENT TARGET CACHE
+RUN --mount=type=cache,id=chroma-target-${TARGETARCH},sharing=locked,from=cooked,source=/chroma/target,target=/chroma/target \
+  --mount=type=cache,sharing=locked,target=/usr/local/cargo/registry/ \
   --mount=type=cache,sharing=locked,target=/usr/local/cargo/git/ \
   if [ "$ENABLE_AVX512" = "1" ]; then \
   export CXXFLAGS="-mavx512f -mavx512dq -mavx512bw -mavx512vl" && \

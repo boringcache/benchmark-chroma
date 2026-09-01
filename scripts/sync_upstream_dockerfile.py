@@ -13,11 +13,33 @@ BLOCK_START = "# BEGIN BORINGCACHE BENCHMARK SCCACHE"
 BLOCK_END = "# END BORINGCACHE BENCHMARK SCCACHE"
 PROOF_START = "# BEGIN BORINGCACHE BENCHMARK COMPILER CACHE PROOF"
 PROOF_END = "# END BORINGCACHE BENCHMARK COMPILER CACHE PROOF"
+TARGET_STAGE_START = "# BEGIN BORINGCACHE BENCHMARK TARGET CACHE STAGE"
+TARGET_STAGE_END = "# END BORINGCACHE BENCHMARK TARGET CACHE STAGE"
+TARGET_MOUNT_START = "# BEGIN BORINGCACHE BENCHMARK PERSISTENT TARGET CACHE"
+TARGET_MOUNT_END = "# END BORINGCACHE BENCHMARK PERSISTENT TARGET CACHE"
 CHEF_STAGE = re.compile(r"^FROM\s+\S+\s+AS\s+chef[ \t]*$", re.IGNORECASE | re.MULTILINE)
 BUILDER_STAGE = re.compile(
     r"^FROM\s+chef\s+AS\s+builder[ \t]*$", re.IGNORECASE | re.MULTILINE
 )
+WORKSPACE_SECTION = "# --- Workspace compile"
 WORKSPACE_BUILD = "cargo build ${build_target} --workspace"
+UPSTREAM_WORKSPACE_TARGET_NOTE = """# No `--mount=type=cache` on ./target here: the cooked dependencies live in the
+# layer produced above, and mounting a cache over ./target would shadow them."""
+TARGET_STAGE_BLOCK = f"""{TARGET_STAGE_START}
+# Keep Cargo Chef's dependency output as an ordinary OCI layer, then use it to
+# initialize the persistent target cache whenever that cache is new or absent.
+FROM cooked AS builder
+ARG TARGETARCH
+{TARGET_STAGE_END}"""
+TARGET_MOUNT_NOTE = f"""{TARGET_MOUNT_START}
+# Unlike an empty target mount, this cache starts from the `cooked` stage. It
+# preserves Cargo's first-party fingerprints and outputs across source changes
+# without giving up the dependency layer when the mutable cache is unavailable.
+{TARGET_MOUNT_END}"""
+TARGET_CACHE_MOUNT = (
+    "--mount=type=cache,id=chroma-target-${TARGETARCH},sharing=locked,"
+    "from=cooked,source=/chroma/target,target=/chroma/target"
+)
 PROOF_ARG_BLOCK = (
     f"{PROOF_START}\nARG BORINGCACHE_BENCHMARK_SCCACHE_PROOF=0\n{PROOF_END}"
 )
@@ -47,10 +69,17 @@ def extract_sccache_block(contents: str) -> str:
 
 
 def render_benchmark_dockerfile(upstream: str, sccache_block: str) -> str:
-    if any(
-        marker in upstream
-        for marker in (BLOCK_START, BLOCK_END, PROOF_START, PROOF_END)
-    ):
+    benchmark_markers = (
+        BLOCK_START,
+        BLOCK_END,
+        PROOF_START,
+        PROOF_END,
+        TARGET_STAGE_START,
+        TARGET_STAGE_END,
+        TARGET_MOUNT_START,
+        TARGET_MOUNT_END,
+    )
+    if any(marker in upstream for marker in benchmark_markers):
         raise DockerfileSyncError(
             "upstream Dockerfile unexpectedly contains benchmark markers"
         )
@@ -70,10 +99,33 @@ def render_benchmark_dockerfile(upstream: str, sccache_block: str) -> str:
         raise DockerfileSyncError(
             "upstream Dockerfile must contain exactly one builder stage"
         )
-    line_end = rendered.find("\n", builder_stages[0].end())
-    insertion = len(rendered) if line_end == -1 else line_end + 1
+    builder_stage = builder_stages[0]
     rendered = (
-        rendered[:insertion] + "\n" + PROOF_ARG_BLOCK + "\n" + rendered[insertion:]
+        rendered[: builder_stage.start()]
+        + "FROM chef AS cooked"
+        + rendered[builder_stage.end() :]
+    )
+
+    if rendered.count(WORKSPACE_SECTION) != 1:
+        raise DockerfileSyncError(
+            "upstream Dockerfile must contain exactly one workspace compile section"
+        )
+    workspace_section = rendered.index(WORKSPACE_SECTION)
+    rendered = (
+        rendered[:workspace_section]
+        + TARGET_STAGE_BLOCK
+        + "\n\n"
+        + PROOF_ARG_BLOCK
+        + "\n\n"
+        + rendered[workspace_section:]
+    )
+
+    if rendered.count(UPSTREAM_WORKSPACE_TARGET_NOTE) != 1:
+        raise DockerfileSyncError(
+            "upstream Dockerfile workspace target-cache note changed"
+        )
+    rendered = rendered.replace(
+        UPSTREAM_WORKSPACE_TARGET_NOTE, TARGET_MOUNT_NOTE, 1
     )
 
     if rendered.count(WORKSPACE_BUILD) != 1:
@@ -87,6 +139,13 @@ def render_benchmark_dockerfile(upstream: str, sccache_block: str) -> str:
         raise DockerfileSyncError("could not isolate the upstream workspace build RUN")
 
     run_block = rendered[run_start + 1 : next_stage]
+    if not run_block.startswith("RUN --mount="):
+        raise DockerfileSyncError(
+            "upstream workspace build must begin with BuildKit cache mounts"
+        )
+    run_block = run_block.replace(
+        "RUN ", f"RUN {TARGET_CACHE_MOUNT} \\\n  ", 1
+    )
     loop_end = "  done"
     if not run_block.endswith(loop_end) or run_block.count("\n" + loop_end) != 1:
         raise DockerfileSyncError(

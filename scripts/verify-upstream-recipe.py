@@ -53,14 +53,24 @@ def main() -> int:
             "ARG BORINGCACHE_BENCHMARK_SCCACHE_PROOF=0",
             "sccache --show-stats --stats-format=json",
             '"cache_(hits|misses)"',
+            "FROM chef AS cooked",
+            "FROM cooked AS builder",
+            "id=chroma-target-${TARGETARCH}",
+            "sharing=locked,from=cooked,source=/chroma/target,target=/chroma/target",
             "target=/usr/local/cargo/registry/",
             "target=/usr/local/cargo/git/",
             "ENV CARGO_INCREMENTAL=0",
         ):
             require(fragment in dockerfile, f"benchmark Dockerfile changed: {fragment}")
         require(
-            "target=/chroma/target" not in dockerfile,
-            "benchmark Dockerfile shadows the cargo-chef target layer",
+            dockerfile.count("target=/chroma/target") == 1,
+            "benchmark Dockerfile must have one persistent Cargo target mount",
+        )
+        require(
+            dockerfile.index("cargo chef cook")
+            < dockerfile.index("FROM cooked AS builder")
+            < dockerfile.index("target=/chroma/target"),
+            "Cargo target mount is not seeded from the cooked dependency stage",
         )
         require(
             dockerfile.index("# END BORINGCACHE BENCHMARK SCCACHE")

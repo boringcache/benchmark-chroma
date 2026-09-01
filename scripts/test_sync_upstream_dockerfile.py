@@ -5,6 +5,11 @@ from scripts.sync_upstream_dockerfile import (
     BLOCK_START,
     PROOF_END,
     PROOF_START,
+    TARGET_CACHE_MOUNT,
+    TARGET_MOUNT_END,
+    TARGET_MOUNT_START,
+    TARGET_STAGE_END,
+    TARGET_STAGE_START,
     DockerfileSyncError,
     extract_sccache_block,
     render_benchmark_dockerfile,
@@ -20,7 +25,15 @@ ARG TOOL=1
 
 FROM chef AS builder
 
-RUN echo prepare && \\
+RUN cargo chef cook --recipe-path recipe.json
+
+# --- Workspace compile (first-party crates) ----------------------------------
+COPY rust/ rust/
+
+# No `--mount=type=cache` on ./target here: the cooked dependencies live in the
+# layer produced above, and mounting a cache over ./target would shadow them.
+RUN --mount=type=cache,sharing=locked,target=/usr/local/cargo/registry/ \\
+  echo prepare && \\
   cargo build ${build_target} --workspace --release && \\
   for bin in app; do \\
   cp "target/${bin}" "./${bin}"; \\
@@ -34,14 +47,38 @@ FROM scratch AS runner
 
         self.assertIn(f"FROM rust:1 AS chef\n\n{self.block}\n\nARG TOOL=1", rendered)
         self.assertIn(
-            f"FROM chef AS builder\n\n{PROOF_START}\n"
+            f"FROM cooked AS builder\nARG TARGETARCH\n{TARGET_STAGE_END}\n\n"
+            f"{PROOF_START}\n"
             "ARG BORINGCACHE_BENCHMARK_SCCACHE_PROOF=0\n"
             f"{PROOF_END}",
             rendered,
         )
+        self.assertIn(f"{TARGET_STAGE_START}\n# Keep Cargo Chef", rendered)
+        self.assertIn(f"{TARGET_MOUNT_START}\n# Unlike an empty", rendered)
+        self.assertIn(
+            f"across source changes\n# without giving up the dependency layer "
+            f"when the mutable cache is unavailable.\n{TARGET_MOUNT_END}",
+            rendered,
+        )
+        self.assertIn(f"RUN {TARGET_CACHE_MOUNT} \\", rendered)
         self.assertIn("sccache --show-stats --stats-format=json", rendered)
         self.assertIn('"cache_(hits|misses)"', rendered)
         self.assertEqual(extract_sccache_block(rendered), self.block)
+
+    def test_seeds_the_target_mount_from_the_cargo_chef_layer(self) -> None:
+        rendered = render_benchmark_dockerfile(self.upstream, self.block)
+
+        cook_stage = rendered.index("FROM chef AS cooked")
+        cook = rendered.index("cargo chef cook")
+        builder_stage = rendered.index("FROM cooked AS builder")
+        target_mount = rendered.index(TARGET_CACHE_MOUNT)
+        workspace_build = rendered.index("cargo build ${build_target} --workspace")
+
+        self.assertLess(cook_stage, cook)
+        self.assertLess(cook, builder_stage)
+        self.assertLess(builder_stage, target_mount)
+        self.assertLess(target_mount, workspace_build)
+        self.assertEqual(rendered.count("target=/chroma/target"), 1)
 
     def test_rejects_an_upstream_file_without_one_chef_stage(self) -> None:
         with self.assertRaisesRegex(DockerfileSyncError, "exactly one chef stage"):
@@ -59,6 +96,15 @@ FROM scratch AS runner
         )
 
         with self.assertRaisesRegex(DockerfileSyncError, "workspace Cargo build"):
+            render_benchmark_dockerfile(upstream, self.block)
+
+    def test_rejects_an_upstream_file_without_the_workspace_section(self) -> None:
+        upstream = self.upstream.replace(
+            "# --- Workspace compile (first-party crates) ----------------------------------",
+            "# Build the workspace",
+        )
+
+        with self.assertRaisesRegex(DockerfileSyncError, "workspace compile section"):
             render_benchmark_dockerfile(upstream, self.block)
 
 
