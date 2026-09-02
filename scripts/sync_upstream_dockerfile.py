@@ -22,34 +22,41 @@ BUILDER_STAGE = re.compile(
     r"^FROM\s+chef\s+AS\s+builder[ \t]*$", re.IGNORECASE | re.MULTILINE
 )
 WORKSPACE_SECTION = "# --- Workspace compile"
+COOK_BUILD = re.compile(r"^(?:RUN |  )cargo chef cook\b[^\n]*$", re.MULTILINE)
 WORKSPACE_BUILD = "cargo build ${build_target} --workspace"
 UPSTREAM_WORKSPACE_TARGET_NOTE = """# No `--mount=type=cache` on ./target here: the cooked dependencies live in the
 # layer produced above, and mounting a cache over ./target would shadow them."""
 TARGET_STAGE_BLOCK = f"""{TARGET_STAGE_START}
-# Keep Cargo Chef's dependency output as an ordinary OCI layer, then use it to
-# initialize the persistent target cache whenever that cache is new or absent.
+# Keep Cargo Chef's dependency output as an ordinary OCI fallback. The cook
+# step moves it aside so the workspace target mount starts empty for hydration.
 FROM cooked AS builder
 ARG TARGETARCH
 {TARGET_STAGE_END}"""
 TARGET_MOUNT_NOTE = f"""{TARGET_MOUNT_START}
-# Unlike an empty target mount, this cache starts from the `cooked` stage. It
-# preserves Cargo's first-party fingerprints and outputs across source changes
-# without giving up the dependency layer when the mutable cache is unavailable.
+# BoringCache hydrates the empty target mount before this RUN starts. When no
+# remote target exists, the command seeds it from Cargo Chef's durable fallback.
 {TARGET_MOUNT_END}"""
-TARGET_CACHE_MOUNT = (
-    "--mount=type=cache,id=chroma-target-${TARGETARCH},sharing=locked,"
-    "from=cooked,source=/chroma/target,target=/chroma/target"
-)
+TARGET_CACHE_MOUNT = "--mount=type=cache,id=chroma-target-${TARGETARCH},sharing=locked,target=/chroma/target"
+TARGET_CACHE_SEED = """  if [ -z "$(find /chroma/target -mindepth 1 -print -quit)" ]; then \\
+  target_cache_source=fallback && \\
+  cp -a /chroma/cargo-chef-target/. /chroma/target/; \\
+  else \\
+  target_cache_source=persistent; \\
+  fi && \\"""
+WORKSPACE_SETUP = """  if [ "$ENABLE_AVX512" = "1" ]; then \\"""
 PROOF_ARG_BLOCK = (
     f"{PROOF_START}\nARG BORINGCACHE_BENCHMARK_SCCACHE_PROOF=0\n{PROOF_END}"
 )
 PROOF_COMMAND = """  done && \\
+  printf 'BORINGCACHE_TARGET_CACHE_SOURCE=%s\\n' "${target_cache_source}" && \\
   if [ "${BORINGCACHE_BENCHMARK_SCCACHE_PROOF}" = "1" ]; then \\
   test "${RUSTC_WRAPPER##*/}" = "sccache" && \\
   test -n "${SCCACHE_WEBDAV_ENDPOINT:-}" && \\
   sccache_stats="$(sccache --show-stats --stats-format=json)" && \\
   printf 'BORINGCACHE_SCCACHE_STATS=%s\\n' "${sccache_stats}" && \\
+  if [ "${target_cache_source}" = "fallback" ]; then \\
   printf '%s\\n' "${sccache_stats}" | grep -Eq '"cache_(hits|misses)":\\{"counts":\\{[^}]*"Rust":[1-9][0-9]*'; \\
+  fi; \\
   fi"""
 
 
@@ -106,6 +113,20 @@ def render_benchmark_dockerfile(upstream: str, sccache_block: str) -> str:
         + rendered[builder_stage.end() :]
     )
 
+    cook_builds = list(COOK_BUILD.finditer(rendered))
+    if len(cook_builds) != 1:
+        raise DockerfileSyncError(
+            "upstream Dockerfile must contain exactly one Cargo Chef cook"
+        )
+    cook_build = cook_builds[0]
+    if cook_build.group().endswith("\\"):
+        raise DockerfileSyncError("upstream Cargo Chef cook command shape changed")
+    rendered = (
+        rendered[: cook_build.end()]
+        + " && \\\n  mv /chroma/target /chroma/cargo-chef-target"
+        + rendered[cook_build.end() :]
+    )
+
     if rendered.count(WORKSPACE_SECTION) != 1:
         raise DockerfileSyncError(
             "upstream Dockerfile must contain exactly one workspace compile section"
@@ -145,6 +166,11 @@ def render_benchmark_dockerfile(upstream: str, sccache_block: str) -> str:
         )
     run_block = run_block.replace(
         "RUN ", f"RUN {TARGET_CACHE_MOUNT} \\\n  ", 1
+    )
+    if run_block.count(WORKSPACE_SETUP) != 1:
+        raise DockerfileSyncError("upstream workspace setup command changed")
+    run_block = run_block.replace(
+        WORKSPACE_SETUP, TARGET_CACHE_SEED + "\n" + WORKSPACE_SETUP, 1
     )
     loop_end = "  done"
     if not run_block.endswith(loop_end) or run_block.count("\n" + loop_end) != 1:

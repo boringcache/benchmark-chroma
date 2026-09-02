@@ -56,7 +56,12 @@ def main() -> int:
             "FROM chef AS cooked",
             "FROM cooked AS builder",
             "id=chroma-target-${TARGETARCH}",
-            "sharing=locked,from=cooked,source=/chroma/target,target=/chroma/target",
+            "sharing=locked,target=/chroma/target",
+            "mv /chroma/target /chroma/cargo-chef-target",
+            'find /chroma/target -mindepth 1 -print -quit',
+            "cp -a /chroma/cargo-chef-target/. /chroma/target/",
+            "BORINGCACHE_TARGET_CACHE_SOURCE=%s",
+            'if [ "${target_cache_source}" = "fallback" ]; then',
             "target=/usr/local/cargo/registry/",
             "target=/usr/local/cargo/git/",
             "ENV CARGO_INCREMENTAL=0",
@@ -67,10 +72,18 @@ def main() -> int:
             "benchmark Dockerfile must have one persistent Cargo target mount",
         )
         require(
+            "from=cooked,source=/chroma/target" not in dockerfile,
+            "Cargo target mount is non-empty before BoringCache hydration",
+        )
+        require(
             dockerfile.index("cargo chef cook")
+            < dockerfile.index("mv /chroma/target /chroma/cargo-chef-target")
             < dockerfile.index("FROM cooked AS builder")
-            < dockerfile.index("target=/chroma/target"),
-            "Cargo target mount is not seeded from the cooked dependency stage",
+            < dockerfile.index("target=/chroma/target")
+            < dockerfile.index('find /chroma/target -mindepth 1 -print -quit')
+            < dockerfile.index("cp -a /chroma/cargo-chef-target/. /chroma/target/")
+            < dockerfile.index("cargo build ${build_target} --workspace"),
+            "Cargo target hydration and fallback order changed",
         )
         require(
             dockerfile.index("# END BORINGCACHE BENCHMARK SCCACHE")

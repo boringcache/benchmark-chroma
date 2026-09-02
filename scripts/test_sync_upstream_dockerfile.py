@@ -6,6 +6,7 @@ from scripts.sync_upstream_dockerfile import (
     PROOF_END,
     PROOF_START,
     TARGET_CACHE_MOUNT,
+    TARGET_CACHE_SEED,
     TARGET_MOUNT_END,
     TARGET_MOUNT_START,
     TARGET_STAGE_END,
@@ -33,7 +34,9 @@ COPY rust/ rust/
 # No `--mount=type=cache` on ./target here: the cooked dependencies live in the
 # layer produced above, and mounting a cache over ./target would shadow them.
 RUN --mount=type=cache,sharing=locked,target=/usr/local/cargo/registry/ \\
-  echo prepare && \\
+  if [ "$ENABLE_AVX512" = "1" ]; then \\
+  echo avx; \\
+  fi && \\
   cargo build ${build_target} --workspace --release && \\
   for bin in app; do \\
   cp "target/${bin}" "./${bin}"; \\
@@ -54,30 +57,48 @@ FROM scratch AS runner
             rendered,
         )
         self.assertIn(f"{TARGET_STAGE_START}\n# Keep Cargo Chef", rendered)
-        self.assertIn(f"{TARGET_MOUNT_START}\n# Unlike an empty", rendered)
+        self.assertIn(f"{TARGET_MOUNT_START}\n# BoringCache hydrates", rendered)
         self.assertIn(
-            f"across source changes\n# without giving up the dependency layer "
-            f"when the mutable cache is unavailable.\n{TARGET_MOUNT_END}",
+            f"before this RUN starts. When no\n# remote target exists, the command "
+            f"seeds it from Cargo Chef's durable fallback.\n{TARGET_MOUNT_END}",
             rendered,
         )
         self.assertIn(f"RUN {TARGET_CACHE_MOUNT} \\", rendered)
+        self.assertIn(TARGET_CACHE_SEED, rendered)
+        self.assertNotIn("from=cooked,source=/chroma/target", rendered)
+        self.assertIn("BORINGCACHE_TARGET_CACHE_SOURCE=%s", rendered)
+        self.assertIn(
+            'if [ "${target_cache_source}" = "fallback" ]; then', rendered
+        )
         self.assertIn("sccache --show-stats --stats-format=json", rendered)
         self.assertIn('"cache_(hits|misses)"', rendered)
         self.assertEqual(extract_sccache_block(rendered), self.block)
 
-    def test_seeds_the_target_mount_from_the_cargo_chef_layer(self) -> None:
+    def test_hydrates_the_target_mount_before_the_cargo_chef_fallback(self) -> None:
         rendered = render_benchmark_dockerfile(self.upstream, self.block)
 
         cook_stage = rendered.index("FROM chef AS cooked")
         cook = rendered.index("cargo chef cook")
+        move_fallback = rendered.index(
+            "mv /chroma/target /chroma/cargo-chef-target"
+        )
         builder_stage = rendered.index("FROM cooked AS builder")
         target_mount = rendered.index(TARGET_CACHE_MOUNT)
+        empty_check = rendered.index(
+            "find /chroma/target -mindepth 1 -print -quit"
+        )
+        seed = rendered.index(
+            "cp -a /chroma/cargo-chef-target/. /chroma/target/"
+        )
         workspace_build = rendered.index("cargo build ${build_target} --workspace")
 
         self.assertLess(cook_stage, cook)
-        self.assertLess(cook, builder_stage)
+        self.assertLess(cook, move_fallback)
+        self.assertLess(move_fallback, builder_stage)
         self.assertLess(builder_stage, target_mount)
-        self.assertLess(target_mount, workspace_build)
+        self.assertLess(target_mount, empty_check)
+        self.assertLess(empty_check, seed)
+        self.assertLess(seed, workspace_build)
         self.assertEqual(rendered.count("target=/chroma/target"), 1)
 
     def test_rejects_an_upstream_file_without_one_chef_stage(self) -> None:

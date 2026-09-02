@@ -141,11 +141,12 @@ RUN --mount=type=cache,sharing=locked,target=/usr/local/cargo/registry/ \
   fi && \
   build_target=$( [ "${ADDRESS_SANITIZER}" = "1" ] && echo '--target x86_64-unknown-linux-gnu' || echo '' ) && \
   release_flag=$( [ "$RELEASE_MODE" = "1" ] && echo '--release' || echo '' ) && \
-  cargo chef cook ${build_target} $(printf -- '-p %s ' $COOK_PACKAGES) ${release_flag} --recipe-path recipe.json
+  cargo chef cook ${build_target} $(printf -- '-p %s ' $COOK_PACKAGES) ${release_flag} --recipe-path recipe.json && \
+  mv /chroma/target /chroma/cargo-chef-target
 
 # BEGIN BORINGCACHE BENCHMARK TARGET CACHE STAGE
-# Keep Cargo Chef's dependency output as an ordinary OCI layer, then use it to
-# initialize the persistent target cache whenever that cache is new or absent.
+# Keep Cargo Chef's dependency output as an ordinary OCI fallback. The cook
+# step moves it aside so the workspace target mount starts empty for hydration.
 FROM cooked AS builder
 ARG TARGETARCH
 # END BORINGCACHE BENCHMARK TARGET CACHE STAGE
@@ -164,13 +165,18 @@ COPY rust/ rust/
 # AVX for Rust. Once Rust supports AVX512, the target-features will be updated
 # to use AVX512.
 # BEGIN BORINGCACHE BENCHMARK PERSISTENT TARGET CACHE
-# Unlike an empty target mount, this cache starts from the `cooked` stage. It
-# preserves Cargo's first-party fingerprints and outputs across source changes
-# without giving up the dependency layer when the mutable cache is unavailable.
+# BoringCache hydrates the empty target mount before this RUN starts. When no
+# remote target exists, the command seeds it from Cargo Chef's durable fallback.
 # END BORINGCACHE BENCHMARK PERSISTENT TARGET CACHE
-RUN --mount=type=cache,id=chroma-target-${TARGETARCH},sharing=locked,from=cooked,source=/chroma/target,target=/chroma/target \
+RUN --mount=type=cache,id=chroma-target-${TARGETARCH},sharing=locked,target=/chroma/target \
   --mount=type=cache,sharing=locked,target=/usr/local/cargo/registry/ \
   --mount=type=cache,sharing=locked,target=/usr/local/cargo/git/ \
+  if [ -z "$(find /chroma/target -mindepth 1 -print -quit)" ]; then \
+  target_cache_source=fallback && \
+  cp -a /chroma/cargo-chef-target/. /chroma/target/; \
+  else \
+  target_cache_source=persistent; \
+  fi && \
   if [ "$ENABLE_AVX512" = "1" ]; then \
   export CXXFLAGS="-mavx512f -mavx512dq -mavx512bw -mavx512vl" && \
   export CFLAGS="-mavx512f -mavx512dq -mavx512bw -mavx512vl" && \
@@ -187,12 +193,15 @@ RUN --mount=type=cache,id=chroma-target-${TARGETARCH},sharing=locked,from=cooked
   for bin in chroma garbage_collector_service chroma-load log_service heap_tender_service query_service compaction_service work_queue_service fn_consumer sysdb_service spanner_migration; do \
   cp "target/${build_dir}/${bin}" "./${bin}"; \
   done && \
+  printf 'BORINGCACHE_TARGET_CACHE_SOURCE=%s\n' "${target_cache_source}" && \
   if [ "${BORINGCACHE_BENCHMARK_SCCACHE_PROOF}" = "1" ]; then \
   test "${RUSTC_WRAPPER##*/}" = "sccache" && \
   test -n "${SCCACHE_WEBDAV_ENDPOINT:-}" && \
   sccache_stats="$(sccache --show-stats --stats-format=json)" && \
   printf 'BORINGCACHE_SCCACHE_STATS=%s\n' "${sccache_stats}" && \
+  if [ "${target_cache_source}" = "fallback" ]; then \
   printf '%s\n' "${sccache_stats}" | grep -Eq '"cache_(hits|misses)":\{"counts":\{[^}]*"Rust":[1-9][0-9]*'; \
+  fi; \
   fi
 
 FROM debian:stable-slim AS runner
