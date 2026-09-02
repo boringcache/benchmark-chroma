@@ -52,16 +52,12 @@ def main() -> int:
             "sccache --version",
             "ARG BORINGCACHE_BENCHMARK_SCCACHE_PROOF=0",
             "sccache --show-stats --stats-format=json",
-            '"cache_(hits|misses)"',
-            "FROM chef AS cooked",
-            "FROM cooked AS builder",
+            "FROM rust:1.92.0 AS build-tools",
+            "FROM build-tools AS builder",
             "id=chroma-target-${TARGETARCH}",
             "sharing=locked,target=/chroma/target",
-            "mv /chroma/target /chroma/cargo-chef-target",
             'find /chroma/target -mindepth 1 -print -quit',
-            "cp -a /chroma/cargo-chef-target/. /chroma/target/",
-            "BORINGCACHE_TARGET_CACHE_SOURCE=%s",
-            'if [ "${target_cache_source}" = "fallback" ]; then',
+            "BORINGCACHE_CARGO_TARGET_READY=1",
             "target=/usr/local/cargo/registry/",
             "target=/usr/local/cargo/git/",
             "ENV CARGO_INCREMENTAL=0",
@@ -72,22 +68,39 @@ def main() -> int:
             "benchmark Dockerfile must have one persistent Cargo target mount",
         )
         require(
-            "from=cooked,source=/chroma/target" not in dockerfile,
-            "Cargo target mount is non-empty before BoringCache hydration",
+            dockerfile.count("target=/usr/local/cargo/registry/") == 1,
+            "benchmark Dockerfile must have one persistent Cargo registry mount",
         )
         require(
-            dockerfile.index("cargo chef cook")
-            < dockerfile.index("mv /chroma/target /chroma/cargo-chef-target")
-            < dockerfile.index("FROM cooked AS builder")
+            dockerfile.count("target=/usr/local/cargo/git/") == 1,
+            "benchmark Dockerfile must have one persistent Cargo Git mount",
+        )
+        require(
+            dockerfile.count("cargo build ${build_target} --workspace") == 1,
+            "benchmark Dockerfile must have one workspace Cargo build",
+        )
+        for removed in (
+            "cargo-chef",
+            "cargo chef",
+            "recipe.json",
+            "COOK_PACKAGES",
+            "FROM chef",
+            "FROM cooked",
+            "cargo-chef-target",
+            "BORINGCACHE_TARGET_CACHE_SOURCE",
+        ):
+            require(removed not in dockerfile, f"removed Cargo Chef shape remains: {removed}")
+        require(
+            dockerfile.index("FROM build-tools AS builder")
             < dockerfile.index("target=/chroma/target")
-            < dockerfile.index('find /chroma/target -mindepth 1 -print -quit')
-            < dockerfile.index("cp -a /chroma/cargo-chef-target/. /chroma/target/")
+            < dockerfile.index("target=/usr/local/cargo/registry/")
+            < dockerfile.index("target=/usr/local/cargo/git/")
             < dockerfile.index("cargo build ${build_target} --workspace"),
-            "Cargo target hydration and fallback order changed",
+            "persistent Cargo mount order changed",
         )
         require(
             dockerfile.index("# END BORINGCACHE BENCHMARK SCCACHE")
-            < dockerfile.index("FROM chef AS planner"),
+            < dockerfile.index("FROM build-tools AS builder"),
             "sccache must remain in Chroma's build toolchain stages",
         )
         upstream = (
@@ -123,7 +136,7 @@ def main() -> int:
         )
         require(
             action.count("BORINGCACHE_BENCHMARK_SCCACHE_PROOF=1") == 2,
-            "BoringCache builds do not require cacheable sccache Rust requests",
+            "BoringCache builds do not verify the compiler and Cargo caches",
         )
         require(
             "SCCACHE_PROOF: ${{ inputs.strategy == 'boringcache' && 'true' || '' }}"

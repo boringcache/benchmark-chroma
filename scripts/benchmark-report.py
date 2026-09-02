@@ -190,7 +190,9 @@ def write_phase(args: argparse.Namespace) -> int:
             "tool": "sccache" if sccache_proof is not None else None,
             "verified": sccache_proof,
             "proof": (
-                "in-build cacheable Rust request" if sccache_proof is True else None
+                "in-build wrapper, endpoint, and Cargo target"
+                if sccache_proof is True
+                else None
             ),
         },
         "source": {

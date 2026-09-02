@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keep the benchmark Dockerfile equal to upstream plus its sccache proof."""
+"""Keep the benchmark Dockerfile aligned with upstream plus Cargo cache support."""
 
 import argparse
 import re
@@ -13,55 +13,134 @@ BLOCK_START = "# BEGIN BORINGCACHE BENCHMARK SCCACHE"
 BLOCK_END = "# END BORINGCACHE BENCHMARK SCCACHE"
 PROOF_START = "# BEGIN BORINGCACHE BENCHMARK COMPILER CACHE PROOF"
 PROOF_END = "# END BORINGCACHE BENCHMARK COMPILER CACHE PROOF"
-TARGET_STAGE_START = "# BEGIN BORINGCACHE BENCHMARK TARGET CACHE STAGE"
-TARGET_STAGE_END = "# END BORINGCACHE BENCHMARK TARGET CACHE STAGE"
-TARGET_MOUNT_START = "# BEGIN BORINGCACHE BENCHMARK PERSISTENT TARGET CACHE"
-TARGET_MOUNT_END = "# END BORINGCACHE BENCHMARK PERSISTENT TARGET CACHE"
-CHEF_STAGE = re.compile(r"^FROM\s+\S+\s+AS\s+chef[ \t]*$", re.IGNORECASE | re.MULTILINE)
-BUILDER_STAGE = re.compile(
-    r"^FROM\s+chef\s+AS\s+builder[ \t]*$", re.IGNORECASE | re.MULTILINE
+CARGO_CACHE_START = "# BEGIN BORINGCACHE BENCHMARK CARGO CACHE MOUNTS"
+CARGO_CACHE_END = "# END BORINGCACHE BENCHMARK CARGO CACHE MOUNTS"
+CHEF_STAGE = re.compile(
+    r"^(FROM\s+\S+\s+AS\s+)chef[ \t]*$", re.IGNORECASE | re.MULTILINE
 )
 WORKSPACE_SECTION = "# --- Workspace compile"
-COOK_BUILD = re.compile(r"^(?:RUN |  )cargo chef cook\b[^\n]*$", re.MULTILINE)
 WORKSPACE_BUILD = "cargo build ${build_target} --workspace"
+UPSTREAM_BASE_HEADER = """# ============================================================================
+# chef: shared toolchain base (rust + protoc + cargo-chef).
+#
+# This is the slow-changing setup layer. It is shared by the `planner` and
+# `builder` stages below so the toolchain/protoc install is built and cached
+# once, regardless of source changes.
+# ============================================================================"""
+BENCHMARK_BASE_HEADER = """# ============================================================================
+# build-tools: shared Rust, protoc, and sccache toolchain.
+#
+# This slow-changing setup stage is inherited by the builder. Cargo downloads
+# and compiled output are persisted independently with BuildKit cache mounts.
+# ============================================================================"""
+UPSTREAM_CARGO_CHEF_INSTALL = r"""# cargo-chef lets us cache the dependency compile as a content-addressed image
+# LAYER (keyed on the dependency graph) instead of leaving it in a volatile
+# `--mount=type=cache` directory that is wiped on a cold/contended builder.
+RUN --mount=type=cache,sharing=locked,target=/usr/local/cargo/registry/ \
+  cargo install cargo-chef --locked
+
+"""
+UPSTREAM_PLANNER = """# ============================================================================
+# planner: emit recipe.json (the dependency graph only).
+#
+# This stage is cheap. Its only purpose is to produce a `recipe.json` that
+# changes ONLY when dependencies change (Cargo.toml / Cargo.lock), giving the
+# `builder` stage a stable cache key for the dependency compile.
+# ============================================================================
+FROM chef AS planner
+
+COPY idl/ idl/
+COPY Cargo.toml Cargo.toml
+COPY Cargo.lock Cargo.lock
+COPY rust/ rust/
+
+RUN cargo chef prepare --recipe-path recipe.json
+
+"""
+UPSTREAM_BUILDER_HEADER = """# ============================================================================
+# builder: cook dependencies into a durable layer, then build the workspace.
+#
+# `cargo chef cook` compiles ONLY third-party dependencies, writing them to
+# ./target. Because this step's only input is recipe.json (and we do NOT mount
+# a cache over ./target), its result is captured as a regular image layer:
+#   * content-addressed on recipe.json -> reused on every build whose deps are
+#     unchanged (the common case: app-only source change),
+#   * never thrashed cross-arch (each arch builds its own layer),
+#   * exportable to a registry (a `--mount=type=cache` dir can never be).
+#
+# The subsequent `cargo build` then compiles only the first-party workspace
+# crates, reusing the cooked dependencies already present in ./target.
+# ============================================================================
+FROM chef AS builder"""
+BENCHMARK_BUILDER_HEADER = f"""# ============================================================================
+# builder: compile Chroma with persistent Cargo and compiler caches.
+# ============================================================================
+FROM build-tools AS builder
+
+{CARGO_CACHE_START}
+ARG TARGETARCH
+{PROOF_START}
+ARG BORINGCACHE_BENCHMARK_SCCACHE_PROOF=0
+{PROOF_END}
+{CARGO_CACHE_END}"""
+UPSTREAM_COOK = r"""# Packages whose bins we ship in images. Used for `cargo chef cook -p ...`
+# because cook does not support `--exclude` (LukeMathWalker/cargo-chef#181);
+# cooking the full workspace would also pull in pyo3/napi build deps.
+ENV COOK_PACKAGES="chroma-cli garbage_collector chroma-load chroma-log-service s3heap-service worker rust-sysdb spanner-migrations"
+
+# --- Dependency compile (durable layer, keyed on recipe.json) ----------------
+# Note: cache mounts are kept ONLY for the crate download dirs (registry/git);
+# the compiled output in ./target is intentionally a layer, not a mount, which
+# is what makes cargo-chef effective.
+COPY --from=planner /chroma/recipe.json recipe.json
+RUN --mount=type=cache,sharing=locked,target=/usr/local/cargo/registry/ \
+  --mount=type=cache,sharing=locked,target=/usr/local/cargo/git/ \
+  if [ "$ENABLE_AVX512" = "1" ]; then \
+  export CXXFLAGS="-mavx512f -mavx512dq -mavx512bw -mavx512vl" && \
+  export CFLAGS="-mavx512f -mavx512dq -mavx512bw -mavx512vl" && \
+  export RUSTFLAGS="${RUSTFLAGS} -C target-feature=+avx,+fma" ; \
+  fi && \
+  build_target=$( [ "${ADDRESS_SANITIZER}" = "1" ] && echo '--target x86_64-unknown-linux-gnu' || echo '' ) && \
+  release_flag=$( [ "$RELEASE_MODE" = "1" ] && echo '--release' || echo '' ) && \
+  cargo chef cook ${build_target} $(printf -- '-p %s ' $COOK_PACKAGES) ${release_flag} --recipe-path recipe.json
+
+"""
 UPSTREAM_WORKSPACE_TARGET_NOTE = """# No `--mount=type=cache` on ./target here: the cooked dependencies live in the
 # layer produced above, and mounting a cache over ./target would shadow them."""
-TARGET_STAGE_BLOCK = f"""{TARGET_STAGE_START}
-# Keep Cargo Chef's dependency output as an ordinary OCI fallback. The cook
-# step moves it aside so the workspace target mount starts empty for hydration.
-FROM cooked AS builder
-ARG TARGETARCH
-{TARGET_STAGE_END}"""
-TARGET_MOUNT_NOTE = f"""{TARGET_MOUNT_START}
-# BoringCache hydrates the empty target mount before this RUN starts. When no
-# remote target exists, the command seeds it from Cargo Chef's durable fallback.
-{TARGET_MOUNT_END}"""
-TARGET_CACHE_MOUNT = "--mount=type=cache,id=chroma-target-${TARGETARCH},sharing=locked,target=/chroma/target"
-TARGET_CACHE_SEED = """  if [ -z "$(find /chroma/target -mindepth 1 -print -quit)" ]; then \\
-  target_cache_source=fallback && \\
-  cp -a /chroma/cargo-chef-target/. /chroma/target/; \\
-  else \\
-  target_cache_source=persistent; \\
-  fi && \\"""
-WORKSPACE_SETUP = """  if [ "$ENABLE_AVX512" = "1" ]; then \\"""
-PROOF_ARG_BLOCK = (
-    f"{PROOF_START}\nARG BORINGCACHE_BENCHMARK_SCCACHE_PROOF=0\n{PROOF_END}"
+CARGO_CACHE_NOTE = f"""{CARGO_CACHE_START}
+# BoringCache persists Cargo's registry, Git checkouts, and target output across
+# ephemeral builders. Target output is architecture-scoped to prevent mixing it.
+{CARGO_CACHE_END}"""
+UPSTREAM_CARGO_MOUNTS = (
+    r"""RUN --mount=type=cache,sharing=locked,target=/usr/local/cargo/registry/ \
+  --mount=type=cache,sharing=locked,target=/usr/local/cargo/git/ """
+    + "\\"
 )
-PROOF_COMMAND = """  done && \\
-  printf 'BORINGCACHE_TARGET_CACHE_SOURCE=%s\\n' "${target_cache_source}" && \\
-  if [ "${BORINGCACHE_BENCHMARK_SCCACHE_PROOF}" = "1" ]; then \\
-  test "${RUSTC_WRAPPER##*/}" = "sccache" && \\
-  test -n "${SCCACHE_WEBDAV_ENDPOINT:-}" && \\
-  sccache_stats="$(sccache --show-stats --stats-format=json)" && \\
-  printf 'BORINGCACHE_SCCACHE_STATS=%s\\n' "${sccache_stats}" && \\
-  if [ "${target_cache_source}" = "fallback" ]; then \\
-  printf '%s\\n' "${sccache_stats}" | grep -Eq '"cache_(hits|misses)":\\{"counts":\\{[^}]*"Rust":[1-9][0-9]*'; \\
-  fi; \\
+BENCHMARK_CARGO_MOUNTS = (
+    r"""RUN --mount=type=cache,id=chroma-target-${TARGETARCH},sharing=locked,target=/chroma/target \
+  --mount=type=cache,sharing=locked,target=/usr/local/cargo/registry/ \
+  --mount=type=cache,sharing=locked,target=/usr/local/cargo/git/ """
+    + "\\"
+)
+PROOF_COMMAND = r"""  done && \
+  if [ "${BORINGCACHE_BENCHMARK_SCCACHE_PROOF}" = "1" ]; then \
+  test "${RUSTC_WRAPPER##*/}" = "sccache" && \
+  test -n "${SCCACHE_WEBDAV_ENDPOINT:-}" && \
+  test -n "$(find /chroma/target -mindepth 1 -print -quit)" && \
+  printf 'BORINGCACHE_CARGO_TARGET_READY=1\n' && \
+  sccache_stats="$(sccache --show-stats --stats-format=json)" && \
+  printf 'BORINGCACHE_SCCACHE_STATS=%s\n' "${sccache_stats}"; \
   fi"""
 
 
 class DockerfileSyncError(RuntimeError):
     pass
+
+
+def replace_exactly(contents: str, old: str, new: str, description: str) -> str:
+    if contents.count(old) != 1:
+        raise DockerfileSyncError(f"upstream Dockerfile {description} changed")
+    return contents.replace(old, new, 1)
 
 
 def extract_sccache_block(contents: str) -> str:
@@ -81,74 +160,62 @@ def render_benchmark_dockerfile(upstream: str, sccache_block: str) -> str:
         BLOCK_END,
         PROOF_START,
         PROOF_END,
-        TARGET_STAGE_START,
-        TARGET_STAGE_END,
-        TARGET_MOUNT_START,
-        TARGET_MOUNT_END,
+        CARGO_CACHE_START,
+        CARGO_CACHE_END,
     )
     if any(marker in upstream for marker in benchmark_markers):
         raise DockerfileSyncError(
             "upstream Dockerfile unexpectedly contains benchmark markers"
         )
 
-    stages = list(CHEF_STAGE.finditer(upstream))
+    rendered = replace_exactly(
+        upstream, UPSTREAM_BASE_HEADER, BENCHMARK_BASE_HEADER, "base header"
+    )
+
+    stages = list(CHEF_STAGE.finditer(rendered))
     if len(stages) != 1:
         raise DockerfileSyncError(
             "upstream Dockerfile must contain exactly one chef stage"
         )
-
-    line_end = upstream.find("\n", stages[0].end())
-    insertion = len(upstream) if line_end == -1 else line_end + 1
-    rendered = upstream[:insertion] + "\n" + sccache_block + "\n" + upstream[insertion:]
-
-    builder_stages = list(BUILDER_STAGE.finditer(rendered))
-    if len(builder_stages) != 1:
-        raise DockerfileSyncError(
-            "upstream Dockerfile must contain exactly one builder stage"
-        )
-    builder_stage = builder_stages[0]
+    stage = stages[0]
     rendered = (
-        rendered[: builder_stage.start()]
-        + "FROM chef AS cooked"
-        + rendered[builder_stage.end() :]
+        rendered[: stage.start()]
+        + stage.group(1)
+        + "build-tools"
+        + rendered[stage.end() :]
     )
+    line_end = rendered.find("\n", stage.start())
+    insertion = len(rendered) if line_end == -1 else line_end + 1
+    rendered = rendered[:insertion] + "\n" + sccache_block + "\n" + rendered[insertion:]
 
-    cook_builds = list(COOK_BUILD.finditer(rendered))
-    if len(cook_builds) != 1:
-        raise DockerfileSyncError(
-            "upstream Dockerfile must contain exactly one Cargo Chef cook"
-        )
-    cook_build = cook_builds[0]
-    if cook_build.group().endswith("\\"):
-        raise DockerfileSyncError("upstream Cargo Chef cook command shape changed")
-    rendered = (
-        rendered[: cook_build.end()]
-        + " && \\\n  mv /chroma/target /chroma/cargo-chef-target"
-        + rendered[cook_build.end() :]
+    rendered = replace_exactly(
+        rendered, UPSTREAM_CARGO_CHEF_INSTALL, "", "Cargo Chef install"
+    )
+    rendered = replace_exactly(rendered, UPSTREAM_PLANNER, "", "planner stage")
+    rendered = replace_exactly(
+        rendered,
+        UPSTREAM_BUILDER_HEADER,
+        BENCHMARK_BUILDER_HEADER,
+        "builder header",
+    )
+    rendered = replace_exactly(rendered, UPSTREAM_COOK, "", "Cargo Chef cook")
+    rendered = replace_exactly(
+        rendered,
+        UPSTREAM_WORKSPACE_TARGET_NOTE,
+        CARGO_CACHE_NOTE,
+        "workspace target-cache note",
+    )
+    rendered = replace_exactly(
+        rendered,
+        UPSTREAM_CARGO_MOUNTS,
+        BENCHMARK_CARGO_MOUNTS,
+        "workspace Cargo mounts",
     )
 
     if rendered.count(WORKSPACE_SECTION) != 1:
         raise DockerfileSyncError(
             "upstream Dockerfile must contain exactly one workspace compile section"
         )
-    workspace_section = rendered.index(WORKSPACE_SECTION)
-    rendered = (
-        rendered[:workspace_section]
-        + TARGET_STAGE_BLOCK
-        + "\n\n"
-        + PROOF_ARG_BLOCK
-        + "\n\n"
-        + rendered[workspace_section:]
-    )
-
-    if rendered.count(UPSTREAM_WORKSPACE_TARGET_NOTE) != 1:
-        raise DockerfileSyncError(
-            "upstream Dockerfile workspace target-cache note changed"
-        )
-    rendered = rendered.replace(
-        UPSTREAM_WORKSPACE_TARGET_NOTE, TARGET_MOUNT_NOTE, 1
-    )
-
     if rendered.count(WORKSPACE_BUILD) != 1:
         raise DockerfileSyncError(
             "upstream Dockerfile must contain exactly one workspace Cargo build"
@@ -160,25 +227,30 @@ def render_benchmark_dockerfile(upstream: str, sccache_block: str) -> str:
         raise DockerfileSyncError("could not isolate the upstream workspace build RUN")
 
     run_block = rendered[run_start + 1 : next_stage]
-    if not run_block.startswith("RUN --mount="):
-        raise DockerfileSyncError(
-            "upstream workspace build must begin with BuildKit cache mounts"
-        )
-    run_block = run_block.replace(
-        "RUN ", f"RUN {TARGET_CACHE_MOUNT} \\\n  ", 1
-    )
-    if run_block.count(WORKSPACE_SETUP) != 1:
-        raise DockerfileSyncError("upstream workspace setup command changed")
-    run_block = run_block.replace(
-        WORKSPACE_SETUP, TARGET_CACHE_SEED + "\n" + WORKSPACE_SETUP, 1
-    )
     loop_end = "  done"
     if not run_block.endswith(loop_end) or run_block.count("\n" + loop_end) != 1:
         raise DockerfileSyncError(
             "upstream workspace build must end with exactly one binary copy loop"
         )
     run_block = run_block[: -len(loop_end)] + PROOF_COMMAND
-    return rendered[: run_start + 1] + run_block + rendered[next_stage:]
+    rendered = rendered[: run_start + 1] + run_block + rendered[next_stage:]
+
+    removed_fragments = (
+        "cargo-chef",
+        "cargo chef",
+        "recipe.json",
+        "COOK_PACKAGES",
+        "FROM chef",
+        "FROM cooked",
+        "cargo-chef-target",
+        "BORINGCACHE_TARGET_CACHE_SOURCE",
+    )
+    for fragment in removed_fragments:
+        if fragment in rendered:
+            raise DockerfileSyncError(
+                f"removed Cargo Chef fragment remains in benchmark: {fragment}"
+            )
+    return rendered
 
 
 def expected_copy() -> str:

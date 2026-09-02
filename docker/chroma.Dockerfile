@@ -1,13 +1,12 @@
 # syntax=docker/dockerfile:1
 
 # ============================================================================
-# chef: shared toolchain base (rust + protoc + cargo-chef).
+# build-tools: shared Rust, protoc, and sccache toolchain.
 #
-# This is the slow-changing setup layer. It is shared by the `planner` and
-# `builder` stages below so the toolchain/protoc install is built and cached
-# once, regardless of source changes.
+# This slow-changing setup stage is inherited by the builder. Cargo downloads
+# and compiled output are persisted independently with BuildKit cache mounts.
 # ============================================================================
-FROM rust:1.92.0 AS chef
+FROM rust:1.92.0 AS build-tools
 
 # BEGIN BORINGCACHE BENCHMARK SCCACHE
 # The image owns the compiler tool. BoringCache supplies only its runtime cache
@@ -67,45 +66,19 @@ RUN ARCH=$(uname -m) && \
   chmod +x /usr/local/bin/protoc && \
   protoc --version  # Verify installed version
 
-# cargo-chef lets us cache the dependency compile as a content-addressed image
-# LAYER (keyed on the dependency graph) instead of leaving it in a volatile
-# `--mount=type=cache` directory that is wiped on a cold/contended builder.
-RUN --mount=type=cache,sharing=locked,target=/usr/local/cargo/registry/ \
-  cargo install cargo-chef --locked
-
 WORKDIR /chroma
 
 # ============================================================================
-# planner: emit recipe.json (the dependency graph only).
-#
-# This stage is cheap. Its only purpose is to produce a `recipe.json` that
-# changes ONLY when dependencies change (Cargo.toml / Cargo.lock), giving the
-# `builder` stage a stable cache key for the dependency compile.
+# builder: compile Chroma with persistent Cargo and compiler caches.
 # ============================================================================
-FROM chef AS planner
+FROM build-tools AS builder
 
-COPY idl/ idl/
-COPY Cargo.toml Cargo.toml
-COPY Cargo.lock Cargo.lock
-COPY rust/ rust/
-
-RUN cargo chef prepare --recipe-path recipe.json
-
-# ============================================================================
-# builder: cook dependencies into a durable layer, then build the workspace.
-#
-# `cargo chef cook` compiles ONLY third-party dependencies, writing them to
-# ./target. Because this step's only input is recipe.json (and we do NOT mount
-# a cache over ./target), its result is captured as a regular image layer:
-#   * content-addressed on recipe.json -> reused on every build whose deps are
-#     unchanged (the common case: app-only source change),
-#   * never thrashed cross-arch (each arch builds its own layer),
-#   * exportable to a registry (a `--mount=type=cache` dir can never be).
-#
-# The subsequent `cargo build` then compiles only the first-party workspace
-# crates, reusing the cooked dependencies already present in ./target.
-# ============================================================================
-FROM chef AS cooked
+# BEGIN BORINGCACHE BENCHMARK CARGO CACHE MOUNTS
+ARG TARGETARCH
+# BEGIN BORINGCACHE BENCHMARK COMPILER CACHE PROOF
+ARG BORINGCACHE_BENCHMARK_SCCACHE_PROOF=0
+# END BORINGCACHE BENCHMARK COMPILER CACHE PROOF
+# END BORINGCACHE BENCHMARK CARGO CACHE MOUNTS
 
 ARG RELEASE_MODE=
 ARG ENABLE_AVX512=
@@ -122,39 +95,6 @@ ENV CARGO_INCREMENTAL=0
 # are built, the final binaries are unnecessarily linked against Python).
 ENV EXCLUDED_PACKAGES="chromadb_rust_bindings chromadb-js-bindings chroma-benchmark "
 
-# Packages whose bins we ship in images. Used for `cargo chef cook -p ...`
-# because cook does not support `--exclude` (LukeMathWalker/cargo-chef#181);
-# cooking the full workspace would also pull in pyo3/napi build deps.
-ENV COOK_PACKAGES="chroma-cli garbage_collector chroma-load chroma-log-service s3heap-service worker rust-sysdb spanner-migrations"
-
-# --- Dependency compile (durable layer, keyed on recipe.json) ----------------
-# Note: cache mounts are kept ONLY for the crate download dirs (registry/git);
-# the compiled output in ./target is intentionally a layer, not a mount, which
-# is what makes cargo-chef effective.
-COPY --from=planner /chroma/recipe.json recipe.json
-RUN --mount=type=cache,sharing=locked,target=/usr/local/cargo/registry/ \
-  --mount=type=cache,sharing=locked,target=/usr/local/cargo/git/ \
-  if [ "$ENABLE_AVX512" = "1" ]; then \
-  export CXXFLAGS="-mavx512f -mavx512dq -mavx512bw -mavx512vl" && \
-  export CFLAGS="-mavx512f -mavx512dq -mavx512bw -mavx512vl" && \
-  export RUSTFLAGS="${RUSTFLAGS} -C target-feature=+avx,+fma" ; \
-  fi && \
-  build_target=$( [ "${ADDRESS_SANITIZER}" = "1" ] && echo '--target x86_64-unknown-linux-gnu' || echo '' ) && \
-  release_flag=$( [ "$RELEASE_MODE" = "1" ] && echo '--release' || echo '' ) && \
-  cargo chef cook ${build_target} $(printf -- '-p %s ' $COOK_PACKAGES) ${release_flag} --recipe-path recipe.json && \
-  mv /chroma/target /chroma/cargo-chef-target
-
-# BEGIN BORINGCACHE BENCHMARK TARGET CACHE STAGE
-# Keep Cargo Chef's dependency output as an ordinary OCI fallback. The cook
-# step moves it aside so the workspace target mount starts empty for hydration.
-FROM cooked AS builder
-ARG TARGETARCH
-# END BORINGCACHE BENCHMARK TARGET CACHE STAGE
-
-# BEGIN BORINGCACHE BENCHMARK COMPILER CACHE PROOF
-ARG BORINGCACHE_BENCHMARK_SCCACHE_PROOF=0
-# END BORINGCACHE BENCHMARK COMPILER CACHE PROOF
-
 # --- Workspace compile (first-party crates) ----------------------------------
 COPY idl/ idl/
 COPY Cargo.toml Cargo.toml
@@ -164,19 +104,13 @@ COPY rust/ rust/
 # Note: Using flag ENABLE_AVX512 to build AVX512 optimizations for hnswlib, and
 # AVX for Rust. Once Rust supports AVX512, the target-features will be updated
 # to use AVX512.
-# BEGIN BORINGCACHE BENCHMARK PERSISTENT TARGET CACHE
-# BoringCache hydrates the empty target mount before this RUN starts. When no
-# remote target exists, the command seeds it from Cargo Chef's durable fallback.
-# END BORINGCACHE BENCHMARK PERSISTENT TARGET CACHE
+# BEGIN BORINGCACHE BENCHMARK CARGO CACHE MOUNTS
+# BoringCache persists Cargo's registry, Git checkouts, and target output across
+# ephemeral builders. Target output is architecture-scoped to prevent mixing it.
+# END BORINGCACHE BENCHMARK CARGO CACHE MOUNTS
 RUN --mount=type=cache,id=chroma-target-${TARGETARCH},sharing=locked,target=/chroma/target \
   --mount=type=cache,sharing=locked,target=/usr/local/cargo/registry/ \
   --mount=type=cache,sharing=locked,target=/usr/local/cargo/git/ \
-  if [ -z "$(find /chroma/target -mindepth 1 -print -quit)" ]; then \
-  target_cache_source=fallback && \
-  cp -a /chroma/cargo-chef-target/. /chroma/target/; \
-  else \
-  target_cache_source=persistent; \
-  fi && \
   if [ "$ENABLE_AVX512" = "1" ]; then \
   export CXXFLAGS="-mavx512f -mavx512dq -mavx512bw -mavx512vl" && \
   export CFLAGS="-mavx512f -mavx512dq -mavx512bw -mavx512vl" && \
@@ -193,15 +127,13 @@ RUN --mount=type=cache,id=chroma-target-${TARGETARCH},sharing=locked,target=/chr
   for bin in chroma garbage_collector_service chroma-load log_service heap_tender_service query_service compaction_service work_queue_service fn_consumer sysdb_service spanner_migration; do \
   cp "target/${build_dir}/${bin}" "./${bin}"; \
   done && \
-  printf 'BORINGCACHE_TARGET_CACHE_SOURCE=%s\n' "${target_cache_source}" && \
   if [ "${BORINGCACHE_BENCHMARK_SCCACHE_PROOF}" = "1" ]; then \
   test "${RUSTC_WRAPPER##*/}" = "sccache" && \
   test -n "${SCCACHE_WEBDAV_ENDPOINT:-}" && \
+  test -n "$(find /chroma/target -mindepth 1 -print -quit)" && \
+  printf 'BORINGCACHE_CARGO_TARGET_READY=1\n' && \
   sccache_stats="$(sccache --show-stats --stats-format=json)" && \
-  printf 'BORINGCACHE_SCCACHE_STATS=%s\n' "${sccache_stats}" && \
-  if [ "${target_cache_source}" = "fallback" ]; then \
-  printf '%s\n' "${sccache_stats}" | grep -Eq '"cache_(hits|misses)":\{"counts":\{[^}]*"Rust":[1-9][0-9]*'; \
-  fi; \
+  printf 'BORINGCACHE_SCCACHE_STATS=%s\n' "${sccache_stats}"; \
   fi
 
 FROM debian:stable-slim AS runner
