@@ -20,6 +20,7 @@ CHEF_STAGE = re.compile(
 )
 WORKSPACE_SECTION = "# --- Workspace compile"
 WORKSPACE_BUILD = "cargo build ${build_target} --workspace"
+WARM_SOURCE_MARKER = "rust/.boringcache-warm-source-change"
 UPSTREAM_BASE_HEADER = """# ============================================================================
 # chef: shared toolchain base (rust + protoc + cargo-chef).
 #
@@ -122,6 +123,11 @@ BENCHMARK_CARGO_MOUNTS = (
   --mount=type=cache,sharing=locked,target=/usr/local/cargo/git/ """
     + "\\"
 )
+CARGO_TARGET_RESTORE_PROOF = rf"""if [ -f "{WARM_SOURCE_MARKER}" ]; then \
+  test -n "$(find /chroma/target -mindepth 1 -print -quit)" && \
+  printf 'BORINGCACHE_CARGO_TARGET_RESTORED=1\n'; \
+  fi && \
+  """
 PROOF_COMMAND = r"""  done && \
   if [ "${BORINGCACHE_BENCHMARK_SCCACHE_PROOF}" = "1" ]; then \
   test "${RUSTC_WRAPPER##*/}" = "sccache" && \
@@ -211,7 +217,6 @@ def render_benchmark_dockerfile(upstream: str, sccache_block: str) -> str:
         BENCHMARK_CARGO_MOUNTS,
         "workspace Cargo mounts",
     )
-
     if rendered.count(WORKSPACE_SECTION) != 1:
         raise DockerfileSyncError(
             "upstream Dockerfile must contain exactly one workspace compile section"
@@ -220,6 +225,12 @@ def render_benchmark_dockerfile(upstream: str, sccache_block: str) -> str:
         raise DockerfileSyncError(
             "upstream Dockerfile must contain exactly one workspace Cargo build"
         )
+    rendered = replace_exactly(
+        rendered,
+        WORKSPACE_BUILD,
+        CARGO_TARGET_RESTORE_PROOF + WORKSPACE_BUILD,
+        "warm Cargo target restore proof",
+    )
     workspace_build = rendered.index(WORKSPACE_BUILD)
     run_start = rendered.rfind("\nRUN ", 0, workspace_build)
     next_stage = rendered.find("\n\nFROM ", workspace_build)

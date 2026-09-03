@@ -65,6 +65,8 @@ def main() -> int:
             "sharing=locked,target=/chroma/target",
             'find /chroma/target -mindepth 1 -print -quit',
             "BORINGCACHE_CARGO_TARGET_READY=1",
+            "rust/.boringcache-warm-source-change",
+            "BORINGCACHE_CARGO_TARGET_RESTORED=1",
             "target=/usr/local/cargo/registry/",
             "target=/usr/local/cargo/git/",
             "ENV CARGO_INCREMENTAL=0",
@@ -169,6 +171,11 @@ def main() -> int:
         scope = (ROOT / "scripts/scope-boringcache-run.sh").read_text()
         require("chroma-sccache-local" in scope, "cache scoping omits sccache")
         require("${scope}-sccache" in scope, "sccache cache tag is not run-scoped")
+        prepare = (ROOT / "scripts/prepare-source.sh").read_text()
+        require(
+            'upstream/rust/.boringcache-warm-source-change"' in prepare,
+            "warm phase does not invalidate the Docker source layer",
+        )
     except (
         DockerfileSyncError,
         KeyError,

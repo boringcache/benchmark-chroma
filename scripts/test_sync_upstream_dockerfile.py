@@ -5,6 +5,7 @@ from scripts.sync_upstream_dockerfile import (
     BLOCK_START,
     CARGO_CACHE_END,
     CARGO_CACHE_START,
+    CARGO_TARGET_RESTORE_PROOF,
     PROOF_END,
     PROOF_START,
     UPSTREAM_DOCKERFILE,
@@ -80,6 +81,14 @@ class SyncUpstreamDockerfileTest(unittest.TestCase):
         self.assertIn("BORINGCACHE_CARGO_TARGET_READY=1", rendered)
         self.assertIn("sccache --show-stats --stats-format=json", rendered)
         self.assertNotIn('"cache_(hits|misses)"', rendered)
+
+    def test_warm_source_change_requires_a_restored_target_before_cargo(self) -> None:
+        rendered = render_benchmark_dockerfile(self.upstream, self.block)
+
+        restore_proof = rendered.index(CARGO_TARGET_RESTORE_PROOF)
+        workspace_build = rendered.index("cargo build ${build_target} --workspace")
+        self.assertLess(restore_proof, workspace_build)
+        self.assertIn("BORINGCACHE_CARGO_TARGET_RESTORED=1", rendered)
 
     def test_rejects_an_upstream_file_without_one_chef_stage(self) -> None:
         upstream = self.upstream.replace(" AS chef", " AS changed", 1)

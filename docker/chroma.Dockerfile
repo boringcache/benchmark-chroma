@@ -118,6 +118,10 @@ RUN --mount=type=cache,id=chroma-target-${TARGETARCH},sharing=locked,target=/chr
   fi && \
   build_target=$( [ "${ADDRESS_SANITIZER}" = "1" ] && echo '--target x86_64-unknown-linux-gnu' || echo '' ) && \
   release_flag=$( [ "$RELEASE_MODE" = "1" ] && echo '--release' || echo '' ) && \
+  if [ -f "rust/.boringcache-warm-source-change" ]; then \
+  test -n "$(find /chroma/target -mindepth 1 -print -quit)" && \
+  printf 'BORINGCACHE_CARGO_TARGET_RESTORED=1\n'; \
+  fi && \
   cargo build ${build_target} --workspace $(printf -- '--exclude %s ' $EXCLUDED_PACKAGES) ${release_flag} && \
   if [ -n "$LOG_SERVICE_CARGO_FEATURES" ]; then \
   cargo build ${build_target} -p chroma-log-service --bin log_service --features "$LOG_SERVICE_CARGO_FEATURES" ${release_flag}; \
