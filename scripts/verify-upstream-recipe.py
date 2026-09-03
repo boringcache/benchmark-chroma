@@ -156,9 +156,23 @@ def main() -> int:
             in action,
             "benchmark report does not record successful sccache proof",
         )
+        for retired_output in (
+            "docker-cache-import-ready",
+            "docker-cache-from-refs",
+            "cache-tag",
+            "outputs.workspace",
+        ):
+            require(
+                retired_output not in action,
+                f"BoringCache Action output remains: {retired_output}",
+            )
         require(
             '--sccache-proof "$SCCACHE_PROOF"' in action,
             "benchmark report omits sccache proof",
+        )
+        require(
+            '--evidence "$EVIDENCE_PATH"' in action,
+            "benchmark report does not consume Action evidence",
         )
         require(
             "upstream/rust/Dockerfile" not in action,
