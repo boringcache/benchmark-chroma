@@ -36,8 +36,15 @@ def require(value: bool, message: str) -> None:
 def main() -> int:
     try:
         plan = tomllib.loads((ROOT / ".boringcache.toml").read_text())
+        docker_plan = plan["adapters"]["docker"]
+        require(docker_plan["command"] == EXPECTED, "Docker plan changed")
         require(
-            plan["adapters"]["docker"]["command"] == EXPECTED, "Docker plan changed"
+            docker_plan["tool-cache"] == ["sccache"],
+            "Docker plan does not own the sccache cache",
+        )
+        require(
+            docker_plan["mount-cache"] is True,
+            "Docker plan does not own the mount cache",
         )
         require(
             plan["adapters"]["sccache"]["tag"] == "chroma-sccache-local",
@@ -119,24 +126,28 @@ def main() -> int:
         action = (
             ROOT / ".github/actions/chroma-docker-benchmark/action.yml"
         ).read_text()
+        require(action.count("RELEASE_MODE=1") == 1, "Actions Cache build changed")
         require(
-            action.count("RELEASE_MODE=1") == 3, "providers disagree on RELEASE_MODE"
+            action.count("platforms: linux/amd64") == 1,
+            "Actions Cache amd64 target changed",
         )
         require(
-            action.count("platforms: linux/amd64") == 3,
-            "providers disagree on amd64 target",
+            action.count("docker/chroma.Dockerfile") == 1,
+            "Actions Cache Dockerfile changed",
         )
         require(
-            action.count("docker/chroma.Dockerfile") == 3,
-            "providers disagree on Dockerfile",
+            action.count(
+                "BORINGCACHE_MANAGED_BUILDKIT_IMAGE: ${{ inputs.buildkit_image }}"
+            )
+            == 2,
+            "BoringCache builds do not select the requested managed BuildKit image",
         )
         require(
-            action.count("docker-tool-cache: sccache") == 2,
-            "BoringCache sccache cache is not enabled",
-        )
-        require(
-            action.count("BORINGCACHE_BENCHMARK_SCCACHE_PROOF=1") == 2,
-            "BoringCache builds do not verify the compiler and Cargo caches",
+            "docker-tool-cache:" not in action
+            and "docker-mount-cache:" not in action
+            and "managed-buildkit-image:" not in action
+            and "setup: none" not in action,
+            "BoringCache Action still receives legacy Docker inputs",
         )
         require(
             "SCCACHE_PROOF: ${{ inputs.strategy == 'boringcache' && 'true' || '' }}"
@@ -146,10 +157,6 @@ def main() -> int:
         require(
             '--sccache-proof "$SCCACHE_PROOF"' in action,
             "benchmark report omits sccache proof",
-        )
-        require(
-            action.count("docker-mount-cache: true") == 2,
-            "BoringCache mount cache is not enabled",
         )
         require(
             "upstream/rust/Dockerfile" not in action,

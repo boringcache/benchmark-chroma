@@ -112,56 +112,28 @@ runs:
       id: publish
       if: inputs.strategy == 'boringcache' && inputs.phase == 'publish'
       uses: boringcache/one@20202f4c4b789cdee581ae3f117dfafb8293b19c # v1 / 1.20.0
+      env:
+        BORINGCACHE_MANAGED_BUILDKIT_IMAGE: ${{ inputs.buildkit_image }}
       with:
         cli-version: ${{ inputs.cli_version }}
-        setup: none
         mode: docker
         trust-policy: publish
         working-directory: .
-        context: upstream
-        dockerfile: docker/chroma.Dockerfile
-        image: ghcr.io/${{ github.repository_owner }}/chroma-benchmark
-        tags: boringcache
-        push: ${{ inputs.push_image == 'true' && github.ref == 'refs/heads/main' }}
-        target: cli
-        platforms: linux/amd64
-        build-args: |
-          RELEASE_MODE=1
-          BORINGCACHE_BENCHMARK_SCCACHE_PROOF=1
-        load: false
-        docker-tool-cache: sccache
-        docker-mount-cache: true
         fail-on-cache-error: true
-        metadata-hints: benchmark=${{ inputs.benchmark_id }},phase=${{ inputs.cache_lane == 'rolling' && 'rolling' || 'fresh-cold' }}
-        managed-buildkit-image: ${{ inputs.buildkit_image }}
 
     - name: Restore with BoringCache
       id: restore
       if: inputs.strategy == 'boringcache' && inputs.phase == 'warm'
       uses: boringcache/one@20202f4c4b789cdee581ae3f117dfafb8293b19c # v1 / 1.20.0
+      env:
+        BORINGCACHE_MANAGED_BUILDKIT_IMAGE: ${{ inputs.buildkit_image }}
       with:
         cli-version: ${{ inputs.cli_version }}
-        setup: none
         mode: docker
         trust-policy: restore
         working-directory: .
-        context: upstream
-        dockerfile: docker/chroma.Dockerfile
-        image: ghcr.io/${{ github.repository_owner }}/chroma-benchmark
-        tags: boringcache
-        push: ${{ inputs.push_image == 'true' && github.ref == 'refs/heads/main' }}
-        target: cli
-        platforms: linux/amd64
-        build-args: |
-          RELEASE_MODE=1
-          BORINGCACHE_BENCHMARK_SCCACHE_PROOF=1
-        load: false
-        docker-tool-cache: sccache
-        docker-mount-cache: true
         fail-on-cache-miss: true
         fail-on-cache-error: true
-        metadata-hints: benchmark=${{ inputs.benchmark_id }},phase=fresh-warm
-        managed-buildkit-image: ${{ inputs.buildkit_image }}
 
     - name: Capture the build timing
       id: build_timing
