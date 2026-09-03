@@ -82,12 +82,17 @@ class SyncUpstreamDockerfileTest(unittest.TestCase):
         self.assertIn("sccache --show-stats --stats-format=json", rendered)
         self.assertNotIn('"cache_(hits|misses)"', rendered)
 
-    def test_warm_source_change_requires_a_restored_target_before_cargo(self) -> None:
+    def test_boringcache_warm_source_change_requires_restored_target(self) -> None:
         rendered = render_benchmark_dockerfile(self.upstream, self.block)
 
         restore_proof = rendered.index(CARGO_TARGET_RESTORE_PROOF)
         workspace_build = rendered.index("cargo build ${build_target} --workspace")
         self.assertLess(restore_proof, workspace_build)
+        self.assertIn(
+            'if [ -f "rust/.boringcache-warm-source-change" ] && '
+            '[ "${BORINGCACHE_BENCHMARK_SCCACHE_PROOF}" = "1" ]',
+            CARGO_TARGET_RESTORE_PROOF,
+        )
         self.assertIn("BORINGCACHE_CARGO_TARGET_RESTORED=1", rendered)
 
     def test_rejects_an_upstream_file_without_one_chef_stage(self) -> None:

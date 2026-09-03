@@ -66,6 +66,7 @@ def main() -> int:
             'find /chroma/target -mindepth 1 -print -quit',
             "BORINGCACHE_CARGO_TARGET_READY=1",
             "rust/.boringcache-warm-source-change",
+            '[ "${BORINGCACHE_BENCHMARK_SCCACHE_PROOF}" = "1" ]',
             "BORINGCACHE_CARGO_TARGET_RESTORED=1",
             "target=/usr/local/cargo/registry/",
             "target=/usr/local/cargo/git/",

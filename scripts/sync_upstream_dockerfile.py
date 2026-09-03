@@ -123,7 +123,7 @@ BENCHMARK_CARGO_MOUNTS = (
   --mount=type=cache,sharing=locked,target=/usr/local/cargo/git/ """
     + "\\"
 )
-CARGO_TARGET_RESTORE_PROOF = rf"""if [ -f "{WARM_SOURCE_MARKER}" ]; then \
+CARGO_TARGET_RESTORE_PROOF = rf"""if [ -f "{WARM_SOURCE_MARKER}" ] && [ "${{BORINGCACHE_BENCHMARK_SCCACHE_PROOF}}" = "1" ]; then \
   test -n "$(find /chroma/target -mindepth 1 -print -quit)" && \
   printf 'BORINGCACHE_CARGO_TARGET_RESTORED=1\n'; \
   fi && \
