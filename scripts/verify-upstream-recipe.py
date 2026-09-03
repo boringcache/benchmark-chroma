@@ -63,9 +63,10 @@ def main() -> int:
             "FROM build-tools AS builder",
             "id=chroma-target-${TARGETARCH}",
             "sharing=locked,target=/chroma/target",
-            'find /chroma/target -mindepth 1 -print -quit',
+            "find /chroma/target -mindepth 1 -print -quit",
             "BORINGCACHE_CARGO_TARGET_READY=1",
             "rust/.boringcache-warm-source-change",
+            '[ "${BORINGCACHE_BENCHMARK_SCCACHE_PROOF}" = "1" ]',
             "BORINGCACHE_CARGO_TARGET_RESTORED=1",
             "target=/usr/local/cargo/registry/",
             "target=/usr/local/cargo/git/",
@@ -98,7 +99,10 @@ def main() -> int:
             "cargo-chef-target",
             "BORINGCACHE_TARGET_CACHE_SOURCE",
         ):
-            require(removed not in dockerfile, f"removed Cargo Chef shape remains: {removed}")
+            require(
+                removed not in dockerfile,
+                f"removed Cargo Chef shape remains: {removed}",
+            )
         require(
             dockerfile.index("FROM build-tools AS builder")
             < dockerfile.index("target=/chroma/target")
@@ -156,9 +160,23 @@ def main() -> int:
             in action,
             "benchmark report does not record successful sccache proof",
         )
+        for retired_output in (
+            "docker-cache-import-ready",
+            "docker-cache-from-refs",
+            "cache-tag",
+            "outputs.workspace",
+        ):
+            require(
+                retired_output not in action,
+                f"BoringCache Action output remains: {retired_output}",
+            )
         require(
             '--sccache-proof "$SCCACHE_PROOF"' in action,
             "benchmark report omits sccache proof",
+        )
+        require(
+            '--evidence "$EVIDENCE_PATH"' in action,
+            "benchmark report does not consume Action evidence",
         )
         require(
             "upstream/rust/Dockerfile" not in action,
