@@ -23,21 +23,15 @@ class SyncUpstreamDockerfileTest(unittest.TestCase):
     def test_replaces_cargo_chef_with_one_persistent_cargo_build(self) -> None:
         rendered = render_benchmark_dockerfile(self.upstream, self.block)
 
-        self.assertIn(
-            f"FROM rust:1.92.0 AS build-tools\n\n{self.block}", rendered
-        )
+        self.assertIn(f"FROM rust:1.92.0 AS build-tools\n\n{self.block}", rendered)
         self.assertIn("FROM build-tools AS builder", rendered)
         self.assertIn(
-            f"{PROOF_START}\n"
-            "ARG BORINGCACHE_BENCHMARK_SCCACHE_PROOF=0\n"
-            f"{PROOF_END}",
+            f"{PROOF_START}\nARG BORINGCACHE_BENCHMARK_SCCACHE_PROOF=0\n{PROOF_END}",
             rendered,
         )
         self.assertEqual(rendered.count(CARGO_CACHE_START), 2)
         self.assertEqual(rendered.count(CARGO_CACHE_END), 2)
-        self.assertEqual(
-            rendered.count("cargo build ${build_target} --workspace"), 1
-        )
+        self.assertEqual(rendered.count("cargo build ${build_target} --workspace"), 1)
         for fragment in (
             "cargo-chef",
             "cargo chef",
@@ -58,10 +52,7 @@ class SyncUpstreamDockerfileTest(unittest.TestCase):
         next_stage = rendered.index("\n\nFROM ", workspace_build)
         run_block = rendered[run_start:next_stage]
 
-        target = (
-            "id=chroma-target-${TARGETARCH},sharing=locked,"
-            "target=/chroma/target"
-        )
+        target = "id=chroma-target-${TARGETARCH},sharing=locked,target=/chroma/target"
         registry = "sharing=locked,target=/usr/local/cargo/registry/"
         git = "sharing=locked,target=/usr/local/cargo/git/"
         self.assertEqual(rendered.count("target=/chroma/target"), 1)

@@ -63,7 +63,7 @@ def main() -> int:
             "FROM build-tools AS builder",
             "id=chroma-target-${TARGETARCH}",
             "sharing=locked,target=/chroma/target",
-            'find /chroma/target -mindepth 1 -print -quit',
+            "find /chroma/target -mindepth 1 -print -quit",
             "BORINGCACHE_CARGO_TARGET_READY=1",
             "rust/.boringcache-warm-source-change",
             '[ "${BORINGCACHE_BENCHMARK_SCCACHE_PROOF}" = "1" ]',
@@ -99,7 +99,10 @@ def main() -> int:
             "cargo-chef-target",
             "BORINGCACHE_TARGET_CACHE_SOURCE",
         ):
-            require(removed not in dockerfile, f"removed Cargo Chef shape remains: {removed}")
+            require(
+                removed not in dockerfile,
+                f"removed Cargo Chef shape remains: {removed}",
+            )
         require(
             dockerfile.index("FROM build-tools AS builder")
             < dockerfile.index("target=/chroma/target")
