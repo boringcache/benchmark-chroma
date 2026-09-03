@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+scope="${1:-}"
+
+if [[ ! "$scope" =~ ^[a-z0-9][a-z0-9._-]+$ ]]; then
+  echo "Expected a lowercase benchmark cache scope, got: ${scope:-<empty>}" >&2
+  exit 1
+fi
+
+config_path="${repo_root}/.boringcache.toml"
+if ! grep -Fq 'tag = "chroma-docker-local"' "$config_path"; then
+  echo "Missing expected local Docker tag in ${config_path}" >&2
+  exit 1
+fi
+if ! grep -Fq 'tag = "chroma-sccache-local"' "$config_path"; then
+  echo "Missing expected local sccache tag in ${config_path}" >&2
+  exit 1
+fi
+
+sed -i "s/tag = \"chroma-docker-local\"/tag = \"${scope}-docker\"/" "$config_path"
+sed -i "s/tag = \"chroma-sccache-local\"/tag = \"${scope}-sccache\"/" "$config_path"
+echo "Scoped the BoringCache Docker and sccache tags to ${scope}."
