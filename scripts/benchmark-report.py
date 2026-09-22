@@ -4,8 +4,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 SCHEMA_VERSION = 1
 PRODUCT_REF_FIELDS = (
@@ -69,7 +73,7 @@ def parse_args() -> argparse.Namespace:
     phase.add_argument("--cache-import-refs", default="")
     phase.add_argument("--cache-tag", default="")
     phase.add_argument("--workspace", default="")
-    phase.add_argument("--sccache-proof", default="")
+    phase.add_argument("--storage-key", default="")
     phase.add_argument("--source-repository", default="")
     phase.add_argument("--source-sha", default="")
     phase.add_argument("--evidence")
@@ -84,11 +88,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def variant_slug(variant: str) -> str:
-    return (
-        "".join(character if character.isalnum() else "-" for character in variant)
-        .strip("-")
-        .lower()
-    )
+    return "".join(character if character.isalnum() else "-" for character in variant).strip("-").lower()
 
 
 def optional_bool(value: str) -> bool | None:
@@ -153,46 +153,203 @@ def evidence_product_refs(evidence: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
-def evidence_restore_phase(evidence: dict[str, Any] | None) -> dict[str, Any]:
+def string_values(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+
+    return [item.strip() for item in value if isinstance(item, str) and item.strip()]
+
+
+def integer_value(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, float):
+        return int(value) if value >= 0 and value.is_integer() else None
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return None
+
+
+def cache_identity(evidence: dict[str, Any] | None) -> dict[str, Any]:
     if not evidence:
         return {}
+
     phases = evidence.get("phases")
     if not isinstance(phases, dict):
         return {}
     restore = phases.get("restore")
-    return restore if isinstance(restore, dict) else {}
-
-
-def evidence_buildkit_cache(restore: dict[str, Any]) -> dict[str, Any]:
-    mode_evidence = restore.get("mode_evidence")
-    if not isinstance(mode_evidence, dict):
+    if not isinstance(restore, dict):
         return {}
-    buildkit_cache = mode_evidence.get("buildkit_cache")
-    return buildkit_cache if isinstance(buildkit_cache, dict) else {}
+
+    workspace = restore.get("workspace")
+    cache_tag = restore.get("cache_tag")
+    tags = list(dict.fromkeys(string_values(restore.get("resolved_tags"))))
+    if not tags and isinstance(cache_tag, str) and cache_tag.strip():
+        tags = [cache_tag.strip()]
+
+    return {
+        "workspace": workspace.strip() if isinstance(workspace, str) else None,
+        "cache_tag": cache_tag.strip() if isinstance(cache_tag, str) else None,
+        "tags": tags,
+    }
 
 
-def evidence_string(value: Any) -> str:
-    return value.strip() if isinstance(value, str) else ""
+def phase_cache_identity(args: argparse.Namespace, evidence: dict[str, Any] | None) -> dict[str, Any]:
+    identity = cache_identity(evidence)
+    workspace = args.workspace.strip() or identity.get("workspace")
+    cache_tag = args.cache_tag.strip() or identity.get("cache_tag")
+    tags = identity.get("tags") or [tag.strip() for tag in args.cache_tag.split(",") if tag.strip()]
+
+    return {
+        "workspace": workspace or None,
+        "cache_tag": cache_tag or None,
+        "tags": tags,
+    }
 
 
-def evidence_strings(value: Any) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    return [item.strip() for item in value if isinstance(item, str) and item.strip()]
+def boringcache_storage(identity: dict[str, Any]) -> dict[str, Any] | None:
+    workspace = identity.get("workspace")
+    tags = identity.get("tags")
+    if not isinstance(workspace, str) or not workspace or not isinstance(tags, list) or not tags:
+        return None
+
+    command = [
+        "boringcache",
+        "check",
+        workspace,
+        ",".join(tags),
+        "--no-git",
+        "--no-platform",
+        "--exact",
+        "--json",
+    ]
+    try:
+        result = subprocess.run(command, capture_output=True, check=False, text=True, timeout=30)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    results = payload.get("results") if isinstance(payload, dict) else None
+    if not isinstance(results, list):
+        return None
+
+    entries: dict[str, int] = {}
+    for item in results:
+        if not isinstance(item, dict) or item.get("status") != "hit":
+            continue
+
+        entry_key = next(
+            (
+                item.get(key)
+                for key in (
+                    "cache_entry_id",
+                    "cacheEntryId",
+                    "manifest_root_digest",
+                    "manifestRootDigest",
+                    "requested_tag",
+                    "requestedTag",
+                    "tag",
+                )
+                if isinstance(item.get(key), str) and item.get(key)
+            ),
+            None,
+        )
+        if entry_key is None:
+            continue
+
+        size = None
+        for field in ("kv_total_size", "kvTotalSize", "compressed_size", "compressedSize", "size_bytes", "sizeBytes", "size"):
+            size = integer_value(item.get(field))
+            if size is not None:
+                break
+        if size is None:
+            continue
+        entries[entry_key] = max(entries.get(entry_key, 0), size)
+
+    total_bytes = sum(entries.values())
+    if total_bytes <= 0:
+        return None
+
+    return {
+        "bytes": total_bytes,
+        "source": "boringcache-check",
+        "breakdown": {
+            "workspace": workspace,
+            "tags": tags,
+            "total_bytes": total_bytes,
+        },
+    }
+
+
+def github_actions_cache_storage(cache_key: str) -> dict[str, Any] | None:
+    repository = os.environ.get("GITHUB_REPOSITORY", "").strip()
+    token = os.environ.get("GITHUB_TOKEN", "").strip()
+    if not repository or not token or not cache_key:
+        return None
+
+    api_url = os.environ.get("GITHUB_API_URL", "https://api.github.com").rstrip("/")
+    next_url = f"{api_url}/repos/{repository}/actions/caches?{urlencode({'per_page': 100, 'key': cache_key})}"
+    total_bytes = 0
+
+    while next_url:
+        request = Request(next_url, headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {token}",
+            "X-GitHub-Api-Version": "2022-11-28",
+        })
+        try:
+            with urlopen(request, timeout=30) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+                link_header = response.headers.get("Link", "")
+        except (HTTPError, URLError, OSError, json.JSONDecodeError):
+            return None
+
+        entries = payload.get("actions_caches") if isinstance(payload, dict) else None
+        if not isinstance(entries, list):
+            return None
+        for entry in entries:
+            if isinstance(entry, dict) and entry.get("key") == cache_key:
+                total_bytes += integer_value(entry.get("size_in_bytes")) or 0
+
+        next_url = None
+        for link in link_header.split(","):
+            if 'rel="next"' in link:
+                next_url = link.split(";", 1)[0].strip().strip("<>")
+                break
+
+    if total_bytes <= 0:
+        return None
+    return {
+        "bytes": total_bytes,
+        "source": "github-actions-cache-api",
+        "breakdown": {
+            "key": cache_key,
+            "total_bytes": total_bytes,
+        },
+    }
+
+
+def storage_sample(args: argparse.Namespace, identity: dict[str, Any]) -> dict[str, Any] | None:
+    if args.strategy == "boringcache":
+        return boringcache_storage(identity)
+    if args.strategy == "actions-cache":
+        return github_actions_cache_storage(args.storage_key)
+    return None
 
 
 def write_phase(args: argparse.Namespace) -> int:
     cache_hit = optional_bool(args.cache_hit)
     import_ready = optional_bool(args.cache_import_ready)
-    sccache_proof = optional_bool(args.sccache_proof)
     evidence = load_evidence(args.evidence)
-    restore_evidence = evidence_restore_phase(evidence)
-    buildkit_cache = evidence_buildkit_cache(restore_evidence)
-    cache_import_refs = [
-        ref for ref in args.cache_import_refs.splitlines() if ref.strip()
-    ] or evidence_strings(buildkit_cache.get("cache_from_refs"))
-    cache_tag = args.cache_tag or evidence_string(restore_evidence.get("cache_tag"))
-    workspace = args.workspace or evidence_string(restore_evidence.get("workspace"))
+    identity = phase_cache_identity(args, evidence)
+    measured_storage = storage_sample(args, identity)
     total_seconds = args.restore_or_setup_seconds + args.build_seconds
 
     payload = {
@@ -213,20 +370,12 @@ def write_phase(args: argparse.Namespace) -> int:
         "cache": {
             "hit": cache_hit,
             "import_ready": import_ready,
-            "import_refs": len(cache_import_refs),
-            "tag": cache_tag or None,
-            "workspace": workspace or None,
-            "storage_bytes": None,
-            "storage_source": None,
-        },
-        "tool_cache": {
-            "tool": "sccache" if sccache_proof is not None else None,
-            "verified": sccache_proof,
-            "proof": (
-                "in-build wrapper, endpoint, and Cargo target"
-                if sccache_proof is True
-                else None
-            ),
+            "import_refs": len([ref for ref in args.cache_import_refs.splitlines() if ref.strip()]),
+            "tag": args.cache_tag or identity.get("cache_tag") or None,
+            "workspace": args.workspace or identity.get("workspace") or None,
+            "storage_bytes": measured_storage["bytes"] if measured_storage else None,
+            "storage_source": measured_storage["source"] if measured_storage else None,
+            "storage_breakdown": measured_storage.get("breakdown") if measured_storage else None,
         },
         "source": {
             "repository": args.source_repository or None,
@@ -241,10 +390,7 @@ def write_phase(args: argparse.Namespace) -> int:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     slug = f"-{variant_slug(args.variant)}" if args.variant else ""
-    output_path = (
-        output_dir
-        / f"{args.benchmark}-{args.strategy}{slug}-{args.lane}-{args.phase}.json"
-    )
+    output_path = output_dir / f"{args.benchmark}-{args.strategy}{slug}-{args.lane}-{args.phase}.json"
     output_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
     print(output_path)
     return 0
@@ -259,9 +405,7 @@ def load_phases(input_dir: Path) -> list[dict[str, Any]]:
     return payloads
 
 
-def merge_lane(
-    benchmark: str, strategy: str, lane: str, phases: list[dict[str, Any]]
-) -> dict[str, Any]:
+def merge_lane(benchmark: str, strategy: str, lane: str, phases: list[dict[str, Any]]) -> dict[str, Any]:
     by_phase = {payload["phase"]: payload for payload in phases}
     runs: dict[str, Any] = {}
     for phase_name, fields in PHASE_RUN_FIELDS.items():
@@ -288,22 +432,17 @@ def merge_lane(
         for payload in phases
         if isinstance(payload.get("product_refs"), dict) and payload.get("product_refs")
     ]
-    product_refs = reference.get("product_refs") or (
-        phase_product_refs[0] if phase_product_refs else {}
-    )
+    product_refs = reference.get("product_refs") or (phase_product_refs[0] if phase_product_refs else {})
     product_refs_consistent = None
     if phase_product_refs:
         signatures = {json.dumps(refs, sort_keys=True) for refs in phase_product_refs}
-        product_refs_consistent = (
-            len(phase_product_refs) == len(phases) and len(signatures) == 1
-        )
+        product_refs_consistent = len(phase_product_refs) == len(phases) and len(signatures) == 1
 
     observations = {
         payload["phase"]: {
             "cache_hit": payload["cache"]["hit"],
             "cache_import_ready": payload["cache"]["import_ready"],
             "cache_import_refs": payload["cache"].get("import_refs"),
-            "sccache_verified": (payload.get("tool_cache") or {}).get("verified"),
         }
         for payload in phases
     }
@@ -316,11 +455,8 @@ def merge_lane(
         "mode": reference["mode"],
         "adapter": reference["adapter"],
         "runs": runs,
-        "speed": {
-            "warm_average_seconds": warm["timing"]["total_seconds"] if warm else None
-        },
+        "speed": {"warm_average_seconds": warm["timing"]["total_seconds"] if warm else None},
         "cache": reference["cache"],
-        "tool_cache": reference.get("tool_cache"),
         "source": reference["source"],
         "product_refs": product_refs,
         "product_refs_consistent": product_refs_consistent,
@@ -383,20 +519,7 @@ def cache_state(payload: dict[str, Any]) -> str:
     return "not reported"
 
 
-def tool_cache_state(payload: dict[str, Any]) -> str:
-    tool_cache = payload.get("tool_cache") or {}
-    if tool_cache.get("verified") is True:
-        return "sccache verified"
-    if tool_cache.get("verified") is False:
-        return "sccache not verified"
-    return "not enabled"
-
-
-def render_markdown(
-    title: str,
-    lanes: dict[tuple[str, str, str, str], dict[str, Any]],
-    phases: list[dict[str, Any]],
-) -> str:
+def render_markdown(title: str, lanes: dict[tuple[str, str, str, str], dict[str, Any]], phases: list[dict[str, Any]]) -> str:
     lines = [f"## {title}", ""]
     benchmarks = sorted({payload["benchmark"] for payload in phases})
 
@@ -404,15 +527,9 @@ def render_markdown(
         if len(benchmarks) > 1:
             lines.append(f"### {benchmark}")
             lines.append("")
-        lines.extend(
-            render_benchmark(
-                benchmark, lanes, phases, depth=4 if len(benchmarks) > 1 else 3
-            )
-        )
+        lines.extend(render_benchmark(benchmark, lanes, phases, depth=4 if len(benchmarks) > 1 else 3))
 
-    source = next(
-        (payload["source"] for payload in phases if payload["source"].get("sha")), None
-    )
+    source = next((payload["source"] for payload in phases if payload["source"].get("sha")), None)
     if source and source.get("repository"):
         lines.append(f"Source: `{source['repository']}@{source['sha'][:7]}`")
         lines.append("")
@@ -450,20 +567,13 @@ def render_benchmark(
 
         lane_providers = sorted(
             {(strategy, variant) for strategy, variant, item in lanes if item == lane},
-            key=lambda entry: (
-                entry[0] != CANDIDATE_STRATEGY,
-                entry[0] != BASELINE_STRATEGY,
-                bool(entry[1]),
-                entry,
-            ),
+            key=lambda entry: (entry[0] != CANDIDATE_STRATEGY, entry[0] != BASELINE_STRATEGY, bool(entry[1]), entry),
         )
 
         lines.append(f"{heading} {lane.capitalize()} lane")
         lines.append("")
-        lines.append(
-            "| Provider | Phase | Cache setup | Build | Cache + build | Workflow | Docker cache | Tool cache |"
-        )
-        lines.append("| --- | --- | ---: | ---: | ---: | ---: | --- | --- |")
+        lines.append("| Provider | Phase | Cache setup | Build | Cache + build | Workflow | Cache |")
+        lines.append("| --- | --- | ---: | ---: | ---: | ---: | --- |")
 
         for phase_name in LANE_PHASES[lane]:
             for strategy, variant in lane_providers:
@@ -487,8 +597,7 @@ def render_benchmark(
                     f"| {format_seconds(timing['build_seconds'])} "
                     f"| {format_seconds(timing['total_seconds'])} "
                     f"| {format_seconds(timing.get('workflow_seconds'))} "
-                    f"| {cache_state(payload)} "
-                    f"| {tool_cache_state(payload)} |"
+                    f"| {cache_state(payload)} |"
                 )
 
         lines.append("")
@@ -500,12 +609,8 @@ def render_benchmark(
                 after = candidate["runs"].get(total_field)
                 if before is None or after is None:
                     continue
-                observed = (candidate.get("phase_observations") or {}).get(
-                    phase_name, {}
-                )
-                if phase_name != "cold" and not imported(
-                    candidate.get("mode"), observed
-                ):
+                observed = (candidate.get("phase_observations") or {}).get(phase_name, {})
+                if phase_name != "cold" and not imported(candidate.get("mode"), observed):
                     lines.append(
                         f"- {PHASE_LABELS[phase_name]}: {PROVIDER_LABELS[CANDIDATE_STRATEGY]} found no cache to import, "
                         "so these timings are not like-for-like."
@@ -530,12 +635,7 @@ def summarize(args: argparse.Namespace) -> int:
 
     grouped: dict[tuple[str, str, str, str], list[dict[str, Any]]] = {}
     for payload in phases:
-        key = (
-            payload["benchmark"],
-            payload["strategy"],
-            payload.get("variant") or "",
-            payload["lane"],
-        )
+        key = (payload["benchmark"], payload["strategy"], payload.get("variant") or "", payload["lane"])
         grouped.setdefault(key, []).append(payload)
 
     lanes = {}
