@@ -196,6 +196,24 @@ def cache_identity(evidence: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
+def cache_import_refs(evidence: dict[str, Any] | None) -> list[str]:
+    if not evidence:
+        return []
+    phases = evidence.get("phases")
+    if not isinstance(phases, dict):
+        return []
+    restore = phases.get("restore")
+    if not isinstance(restore, dict):
+        return []
+    mode_evidence = restore.get("mode_evidence")
+    if not isinstance(mode_evidence, dict):
+        return []
+    buildkit = mode_evidence.get("buildkit_cache")
+    if not isinstance(buildkit, dict):
+        return []
+    return string_values(buildkit.get("cache_from_refs"))
+
+
 def phase_cache_identity(args: argparse.Namespace, evidence: dict[str, Any] | None) -> dict[str, Any]:
     identity = cache_identity(evidence)
     workspace = args.workspace.strip() or identity.get("workspace")
@@ -370,7 +388,7 @@ def write_phase(args: argparse.Namespace) -> int:
         "cache": {
             "hit": cache_hit,
             "import_ready": import_ready,
-            "import_refs": len([ref for ref in args.cache_import_refs.splitlines() if ref.strip()]),
+            "import_refs": len(string_values(args.cache_import_refs.splitlines()) or cache_import_refs(evidence)),
             "tag": args.cache_tag or identity.get("cache_tag") or None,
             "workspace": args.workspace or identity.get("workspace") or None,
             "storage_bytes": measured_storage["bytes"] if measured_storage else None,
