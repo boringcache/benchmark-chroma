@@ -51,6 +51,8 @@ class BenchmarkReportTest(unittest.TestCase):
                     "docker",
                     "--build-seconds",
                     "10",
+                    "--sccache-proof",
+                    "true",
                     "--evidence",
                     str(evidence),
                     "--output-dir",
@@ -63,10 +65,42 @@ class BenchmarkReportTest(unittest.TestCase):
                 (output / "chroma-boringcache-fresh-warm.json").read_text()
             )
             self.assertEqual(report["cache"]["import_refs"], 2)
+            self.assertTrue(report["cache"]["sccache_proof"])
             self.assertEqual(report["cache"]["tag"], "chroma-docker-test")
             self.assertEqual(
                 report["cache"]["workspace"], "boringcache/benchmark-chroma"
             )
+
+    def test_empty_sccache_proof_is_unknown(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "benchmark-report.py"),
+                    "phase",
+                    "--benchmark",
+                    "chroma",
+                    "--strategy",
+                    "actions-cache",
+                    "--lane",
+                    "rolling",
+                    "--phase",
+                    "commit",
+                    "--mode",
+                    "docker",
+                    "--build-seconds",
+                    "10",
+                    "--sccache-proof",
+                    "",
+                    "--output-dir",
+                    directory,
+                ],
+                check=True,
+            )
+            report = json.loads(
+                (Path(directory) / "chroma-actions-cache-rolling-commit.json").read_text()
+            )
+            self.assertIsNone(report["cache"]["sccache_proof"])
 
 
 if __name__ == "__main__":

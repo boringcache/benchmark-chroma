@@ -69,6 +69,7 @@ def parse_args() -> argparse.Namespace:
     phase.add_argument("--restore-or-setup-seconds", type=int, default=0)
     phase.add_argument("--workflow-seconds", type=int, default=0)
     phase.add_argument("--cache-hit", default="")
+    phase.add_argument("--sccache-proof", default="")
     phase.add_argument("--cache-import-ready", default="")
     phase.add_argument("--cache-import-refs", default="")
     phase.add_argument("--cache-tag", default="")
@@ -387,6 +388,7 @@ def write_phase(args: argparse.Namespace) -> int:
         },
         "cache": {
             "hit": cache_hit,
+            "sccache_proof": optional_bool(args.sccache_proof),
             "import_ready": import_ready,
             "import_refs": len(string_values(args.cache_import_refs.splitlines()) or cache_import_refs(evidence)),
             "tag": args.cache_tag or identity.get("cache_tag") or None,
@@ -459,6 +461,7 @@ def merge_lane(benchmark: str, strategy: str, lane: str, phases: list[dict[str, 
     observations = {
         payload["phase"]: {
             "cache_hit": payload["cache"]["hit"],
+            "sccache_proof": payload["cache"].get("sccache_proof"),
             "cache_import_ready": payload["cache"]["import_ready"],
             "cache_import_refs": payload["cache"].get("import_refs"),
         }
