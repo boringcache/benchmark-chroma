@@ -128,7 +128,7 @@ RUN --mount=type=cache,id=chroma-target-${TARGETARCH},sharing=locked,target=/chr
   fi && \
   build_dir=$( [ "$RELEASE_MODE" = "1" ] && echo release || echo debug ) && \
   build_dir=$( [ "${ADDRESS_SANITIZER}" = "1" ] && echo "x86_64-unknown-linux-gnu/${build_dir}" || echo "${build_dir}" ) && \
-  for bin in chroma garbage_collector_service chroma-load log_service heap_tender_service query_service compaction_service work_queue_service fn_consumer sysdb_service spanner_migration; do \
+  for bin in chroma garbage_collector_service chroma-load log_service heap_tender_service query_service compaction_service work_queue_service fn_consumer sysdb_service spanner_migration token_bucket_service; do \
   cp "target/${build_dir}/${bin}" "./${bin}"; \
   done && \
   if [ "${BORINGCACHE_BENCHMARK_SCCACHE_PROOF}" = "1" ]; then \
@@ -202,3 +202,8 @@ ENTRYPOINT [ "sh", "-c", "ulimit -c 0 && exec ./sysdb_service" ]
 FROM runner AS rust-sysdb-migration
 COPY --from=builder /chroma/spanner_migration .
 ENTRYPOINT ["sh", "-c", "ulimit -c 0 && exec ./spanner_migration" ]
+
+FROM runner AS mdac_service
+COPY --from=builder /chroma/token_bucket_service .
+EXPOSE 8000
+ENTRYPOINT [ "sh", "-c", "ulimit -c 0 && exec ./token_bucket_service" ]

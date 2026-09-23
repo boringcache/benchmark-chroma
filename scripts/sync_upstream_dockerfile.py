@@ -87,7 +87,7 @@ ARG BORINGCACHE_BENCHMARK_SCCACHE_PROOF=0
 UPSTREAM_COOK = r"""# Packages whose bins we ship in images. Used for `cargo chef cook -p ...`
 # because cook does not support `--exclude` (LukeMathWalker/cargo-chef#181);
 # cooking the full workspace would also pull in pyo3/napi build deps.
-ENV COOK_PACKAGES="chroma-cli garbage_collector chroma-load chroma-log-service s3heap-service worker rust-sysdb spanner-migrations"
+ENV COOK_PACKAGES="chroma-cli garbage_collector chroma-load chroma-log-service s3heap-service worker rust-sysdb spanner-migrations mdac-service"
 
 # --- Dependency compile (durable layer, keyed on recipe.json) ----------------
 # Note: cache mounts are kept ONLY for the crate download dirs (registry/git);
