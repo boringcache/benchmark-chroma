@@ -118,6 +118,12 @@ def github_identity() -> dict[str, Any]:
         "job": os.environ.get("GITHUB_JOB"),
         "workflow": os.environ.get("GITHUB_WORKFLOW"),
         "ref_name": os.environ.get("GITHUB_REF_NAME"),
+        "runner_os": os.environ.get("RUNNER_OS"),
+        "runner_arch": os.environ.get("RUNNER_ARCH"),
+        "runner_name": os.environ.get("RUNNER_NAME"),
+        "runner_environment": os.environ.get("RUNNER_ENVIRONMENT"),
+        "runner_image": os.environ.get("ImageOS"),
+        "runner_image_version": os.environ.get("ImageVersion"),
     }
 
 
@@ -197,24 +203,6 @@ def cache_identity(evidence: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
-def cache_import_refs(evidence: dict[str, Any] | None) -> list[str]:
-    if not evidence:
-        return []
-    phases = evidence.get("phases")
-    if not isinstance(phases, dict):
-        return []
-    restore = phases.get("restore")
-    if not isinstance(restore, dict):
-        return []
-    mode_evidence = restore.get("mode_evidence")
-    if not isinstance(mode_evidence, dict):
-        return []
-    buildkit = mode_evidence.get("buildkit_cache")
-    if not isinstance(buildkit, dict):
-        return []
-    return string_values(buildkit.get("cache_from_refs"))
-
-
 def phase_cache_identity(args: argparse.Namespace, evidence: dict[str, Any] | None) -> dict[str, Any]:
     identity = cache_identity(evidence)
     workspace = args.workspace.strip() or identity.get("workspace")
@@ -225,6 +213,21 @@ def phase_cache_identity(args: argparse.Namespace, evidence: dict[str, Any] | No
         "workspace": workspace or None,
         "cache_tag": cache_tag or None,
         "tags": tags,
+    }
+
+
+def docker_cache_plan(evidence: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(evidence, dict):
+        return None
+    restore = (evidence.get("phases") or {}).get("restore") or {}
+    mode_evidence = restore.get("mode_evidence") or {}
+    plan = mode_evidence.get("buildkit_cache") or {}
+    if not isinstance(plan, dict) or not plan:
+        return None
+    return {
+        "import_tags": string_values(plan.get("cache_from_tags")),
+        "planned_import_refs": len(string_values(plan.get("cache_from_refs"))),
+        "export_tag": plan.get("cache_to_tag"),
     }
 
 
@@ -364,6 +367,8 @@ def storage_sample(args: argparse.Namespace, identity: dict[str, Any]) -> dict[s
 
 
 def write_phase(args: argparse.Namespace) -> int:
+    if not args.source_repository or not args.source_sha:
+        raise SystemExit("benchmark phase requires the exact source repository and SHA")
     cache_hit = optional_bool(args.cache_hit)
     import_ready = optional_bool(args.cache_import_ready)
     evidence = load_evidence(args.evidence)
@@ -390,7 +395,8 @@ def write_phase(args: argparse.Namespace) -> int:
             "hit": cache_hit,
             "sccache_proof": optional_bool(args.sccache_proof),
             "import_ready": import_ready,
-            "import_refs": len(string_values(args.cache_import_refs.splitlines()) or cache_import_refs(evidence)),
+            "import_refs": len(string_values(args.cache_import_refs.splitlines())),
+            "docker_plan": docker_cache_plan(evidence) if args.mode in ("docker", "buildkit") else None,
             "tag": args.cache_tag or identity.get("cache_tag") or None,
             "workspace": args.workspace or identity.get("workspace") or None,
             "storage_bytes": measured_storage["bytes"] if measured_storage else None,
@@ -526,7 +532,9 @@ def cache_state(payload: dict[str, Any]) -> str:
         return "import not ready"
     if payload.get("mode") in IMPORT_MODES:
         if cache.get("import_ready") is None:
-            return "not reported"
+            plan = cache.get("docker_plan") or {}
+            count = plan.get("planned_import_refs")
+            return f"reuse not measured ({count} refs planned)" if count is not None else "not reported"
         refs = cache.get("import_refs")
         if refs:
             return f"imported {refs} ref{'s' if refs > 1 else ''}"
@@ -650,6 +658,17 @@ def summarize(args: argparse.Namespace) -> int:
     phases = load_phases(Path(args.input_dir))
     if not phases:
         raise SystemExit(f"no benchmark phase evidence found under {args.input_dir}")
+
+    source_shas: dict[tuple[str, str], set[str]] = {}
+    for phase in phases:
+        source = phase.get("source") or {}
+        sha = source.get("sha")
+        if not sha:
+            raise SystemExit(f"missing source SHA for {phase['benchmark']} {phase['strategy']}")
+        source_shas.setdefault((phase["benchmark"], phase["lane"]), set()).add(sha)
+    for (benchmark, lane), shas in source_shas.items():
+        if len(shas) != 1:
+            raise SystemExit(f"mixed source SHAs for {benchmark} {lane}: {', '.join(sorted(shas))}")
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
